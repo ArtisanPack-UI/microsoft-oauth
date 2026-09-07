@@ -103,6 +103,28 @@ it( 'considers a public client (no secret) with id and tenant configured', funct
     expect( $driver->getClientSecret() )->toBeNull();
 } );
 
+it( 'flips isConfigured() to false when the stored secret cannot be decrypted', function (): void {
+    // Simulates the APP_KEY-rotated / row-corrupted case: a garbled ciphertext
+    // sits in the settings row alongside a valid client_id + tenant. Without
+    // this guard, isConfigured() would return true and the OAuth flow would
+    // proceed forward with a phantom empty client_secret.
+    apUpdateSetting( CmsSettingsDriver::KEY_CLIENT_ID, 'cid' );
+    apUpdateSetting( CmsSettingsDriver::KEY_TENANT, 'common' );
+
+    // Bypass the sanitize callback so we can drop raw non-ciphertext into
+    // the secret slot exactly like a corrupted / re-keyed row would look.
+    $GLOBALS[ '__cms_settings_stub_values' ][ CmsSettingsDriver::KEY_CLIENT_SECRET ] = 'not-real-ciphertext';
+
+    /** @var CmsSettingsDriver $driver */
+    $driver = app( CmsSettingsDriver::class );
+    $driver->flush();
+
+    expect( $driver->getClientId() )->toBe( 'cid' );
+    expect( $driver->getTenant() )->toBe( 'common' );
+    expect( $driver->getClientSecret() )->toBeNull();
+    expect( $driver->isConfigured() )->toBeFalse();
+} );
+
 it( 'encrypts secrets written directly through apUpdateSetting (Settings UI path)', function (): void {
     // Simulates an operator typing the client secret into the CMS
     // Settings admin UI: apUpdateSetting is called with plaintext. The

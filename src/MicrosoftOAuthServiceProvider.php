@@ -27,6 +27,7 @@ use ArtisanPackUI\MicrosoftOAuth\Tokens\TokenManager;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\ServiceProvider;
+use RuntimeException;
 
 /**
  * Service provider for the MicrosoftOAuth package.
@@ -84,6 +85,16 @@ class MicrosoftOAuthServiceProvider extends ServiceProvider
         // own right and hold the per-request cache.
         $this->app->bind( ConfigurationRepository::class, function ( Application $app ): ConfigurationRepository {
             $driver = $app[ 'config' ]->get( 'microsoft-oauth.driver', 'config' );
+
+            if ( 'cms' === $driver && ! function_exists( 'apGetSetting' ) ) {
+                // Fail loudly rather than silently falling back — the operator
+                // explicitly asked for the CMS driver; quietly reading from a
+                // different backend would mask the missing dependency and
+                // make credential-persistence bugs impossible to diagnose.
+                throw new RuntimeException(
+                    'artisanpack-ui/microsoft-oauth: driver=cms requires artisanpack-ui/cms-framework to be installed. Install the framework or change microsoft-oauth.driver.',
+                );
+            }
 
             return match ( $driver ) {
                 'database' => $app->make( DatabaseDriver::class ),

@@ -42,6 +42,17 @@ class CmsSettingsDriver implements ConfigurationRepository
      */
     protected ?array $cache = null;
 
+    /**
+     * Whether the last load() saw a stored client_secret that failed to
+     * decrypt. Tracked separately from a legitimately-null secret so
+     * confidential-client callers can distinguish "public client, no secret
+     * needed" from "secret is corrupt / APP_KEY rotated" and refuse to
+     * proceed into an OAuth flow with a phantom empty secret.
+     *
+     * @since 1.0.0
+     */
+    protected bool $secretDecryptFailed = false;
+
     public function __construct( protected Encrypter $encrypter )
     {
     }
@@ -72,11 +83,21 @@ class CmsSettingsDriver implements ConfigurationRepository
         apUpdateSetting( self::KEY_CLIENT_SECRET, $credentials[ 'client_secret' ] ?? null );
         apUpdateSetting( self::KEY_TENANT, $credentials[ 'tenant' ] ?? null );
 
-        $this->cache = null;
+        $this->cache               = null;
+        $this->secretDecryptFailed = false;
     }
 
     public function isConfigured(): bool
     {
+        // Force the cache to populate so `$secretDecryptFailed` reflects the
+        // currently-stored row before we consult it. Reading via load()
+        // directly (instead of the getters) avoids relying on getter order.
+        $this->load();
+
+        if ( $this->secretDecryptFailed ) {
+            return false;
+        }
+
         return ! empty( $this->getClientId() )
             && ! empty( $this->getTenant() );
     }
@@ -88,7 +109,8 @@ class CmsSettingsDriver implements ConfigurationRepository
      */
     public function flush(): void
     {
-        $this->cache = null;
+        $this->cache               = null;
+        $this->secretDecryptFailed = false;
     }
 
     /**
@@ -104,7 +126,8 @@ class CmsSettingsDriver implements ConfigurationRepository
         $secretCipher = apGetSetting( self::KEY_CLIENT_SECRET );
         $tenant       = apGetSetting( self::KEY_TENANT );
 
-        $secret = null;
+        $secret                    = null;
+        $this->secretDecryptFailed = false;
         if ( ! empty( $secretCipher ) && is_string( $secretCipher ) ) {
             try {
                 $secret = $this->encrypter->decryptString( $secretCipher );
@@ -113,7 +136,8 @@ class CmsSettingsDriver implements ConfigurationRepository
                     'artisanpack-ui/microsoft-oauth: failed to decrypt CMS-stored client_secret; treating as unconfigured. Was APP_KEY rotated without re-encrypting the setting?',
                     [ 'exception' => $e::class, 'message' => $e->getMessage() ],
                 );
-                $secret = null;
+                $secret                    = null;
+                $this->secretDecryptFailed = true;
             }
         }
 
