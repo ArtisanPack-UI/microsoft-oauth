@@ -29,6 +29,15 @@ use Throwable;
  */
 class DatabaseDriver implements ConfigurationRepository
 {
+
+    /**
+     * Deterministic key for the one-and-only credential row. A unique index
+     * on the column keeps concurrent initial saves from racing in a duplicate.
+     *
+     * @since 1.0.0
+     */
+    protected const SINGLETON_KEY = 'default';
+
     protected string $table = 'microsoft_oauth_configurations';
 
     /**
@@ -59,25 +68,28 @@ class DatabaseDriver implements ConfigurationRepository
 
     public function save( array $credentials ): void
     {
-        $row = [
-            'client_id'     => $credentials[ 'client_id' ] ?? null,
-            'client_secret' => isset( $credentials[ 'client_secret' ] ) && '' !== $credentials[ 'client_secret' ]
-                ? $this->encrypter->encryptString( (string) $credentials[ 'client_secret' ] )
-                : null,
-            'tenant'        => $credentials[ 'tenant' ] ?? null,
-            'updated_at'    => now(),
-        ];
+        $now = now();
 
-        $existing = $this->connection->table( $this->table )->first();
-
-        if ( $existing ) {
-            $this->connection->table( $this->table )
-                ->where( 'id', $existing->id )
-                ->update( $row );
-        } else {
-            $row[ 'created_at' ] = now();
-            $this->connection->table( $this->table )->insert( $row );
-        }
+        // Atomic upsert against the unique `singleton_key`. Compiles to a
+        // single INSERT … ON CONFLICT / ON DUPLICATE KEY UPDATE, so two
+        // concurrent initial saves cannot race in a duplicate row, and
+        // `created_at` is preserved across updates.
+        $this->connection->table( $this->table )->upsert(
+            [
+                [
+                    'singleton_key' => self::SINGLETON_KEY,
+                    'client_id'     => $credentials[ 'client_id' ] ?? null,
+                    'client_secret' => isset( $credentials[ 'client_secret' ] ) && '' !== $credentials[ 'client_secret' ]
+                        ? $this->encrypter->encryptString( (string) $credentials[ 'client_secret' ] )
+                        : null,
+                    'tenant'        => $credentials[ 'tenant' ] ?? null,
+                    'created_at'    => $now,
+                    'updated_at'    => $now,
+                ],
+            ],
+            [ 'singleton_key' ],
+            [ 'client_id', 'client_secret', 'tenant', 'updated_at' ],
+        );
 
         $this->cache = null;
     }
@@ -97,7 +109,9 @@ class DatabaseDriver implements ConfigurationRepository
             return $this->cache;
         }
 
-        $row = $this->connection->table( $this->table )->first();
+        $row = $this->connection->table( $this->table )
+            ->where( 'singleton_key', self::SINGLETON_KEY )
+            ->first();
 
         if ( ! $row ) {
             return $this->cache = [];

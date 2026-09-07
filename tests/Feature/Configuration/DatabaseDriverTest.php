@@ -78,6 +78,29 @@ it( 'stores a null client_secret for public clients', function (): void {
     expect( $driver->isConfigured() )->toBeTrue();
 } );
 
+it( 'preserves created_at across subsequent saves', function (): void {
+    /** @var DatabaseDriver $driver */
+    $driver = app( ConfigurationRepository::class );
+
+    $driver->save( [
+        'client_id' => 'app-1',
+        'tenant'    => 'common',
+    ] );
+
+    $original = DB::table( 'microsoft_oauth_configurations' )->first();
+
+    // A short pause would be more realistic, but we assert the value is
+    // unchanged rather than that it advanced — no sleep needed.
+    $driver->save( [
+        'client_id' => 'app-2',
+        'tenant'    => 'common',
+    ] );
+
+    $updated = DB::table( 'microsoft_oauth_configurations' )->first();
+    expect( $updated->created_at )->toBe( $original->created_at );
+    expect( $updated->client_id )->toBe( 'app-2' );
+} );
+
 it( 'returns null values when no configuration row exists', function (): void {
     /** @var DatabaseDriver $driver */
     $driver = app( ConfigurationRepository::class );

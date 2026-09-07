@@ -58,7 +58,12 @@ class MicrosoftOAuthServiceProvider extends ServiceProvider
             fn ( Application $app ): ConfigDriver => new ConfigDriver( $app[ 'config' ] ),
         );
 
-        $this->app->singleton(
+        // Scoped: DatabaseDriver holds a per-request row cache. Under Octane
+        // or long-lived queue workers, a singleton would keep serving stale
+        // credentials after another worker rewrote the row. Scoped bindings
+        // are flushed between requests / jobs, so each lifecycle gets a
+        // freshly-loaded cache.
+        $this->app->scoped(
             DatabaseDriver::class,
             fn ( Application $app ): DatabaseDriver => new DatabaseDriver(
                 $app[ 'db' ]->connection(),
@@ -80,7 +85,11 @@ class MicrosoftOAuthServiceProvider extends ServiceProvider
 
         $this->app->singleton( ScopeRegistry::class );
 
-        $this->app->singleton( OAuthManager::class, function ( Application $app ): OAuthManager {
+        // Scoped: these managers capture a ConfigurationRepository reference
+        // in their constructor. Keeping them as singletons on Octane / queue
+        // workers would pin a stale DatabaseDriver instance for the worker
+        // lifetime even after another lifecycle rewrote the credential row.
+        $this->app->scoped( OAuthManager::class, function ( Application $app ): OAuthManager {
             return new OAuthManager(
                 $app->make( ConfigurationRepository::class ),
                 $app->make( 'config' ),
@@ -90,7 +99,7 @@ class MicrosoftOAuthServiceProvider extends ServiceProvider
             );
         } );
 
-        $this->app->singleton( TokenManager::class, function ( Application $app ): TokenManager {
+        $this->app->scoped( TokenManager::class, function ( Application $app ): TokenManager {
             return new TokenManager(
                 $app->make( ConfigurationRepository::class ),
                 $app->make( HttpFactory::class ),
