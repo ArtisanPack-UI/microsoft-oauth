@@ -74,4 +74,17 @@ return [
         'redirect_after_error'   => env( 'MICROSOFT_OAUTH_REDIRECT_AFTER_ERROR', '/' ),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | User Model
+    |--------------------------------------------------------------------------
+    |
+    | Fully-qualified class name of the application's User model. Used by the
+    | MicrosoftConnection Eloquent `belongsTo` relationship so the connection
+    | knows how to hydrate its owning user.
+    |
+    */
+
+    'user_model'    => env( 'MICROSOFT_OAUTH_USER_MODEL', 'App\\Models\\User' ),
+
 ];
