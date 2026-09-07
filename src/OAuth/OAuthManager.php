@@ -15,6 +15,7 @@ namespace ArtisanPackUI\MicrosoftOAuth\OAuth;
 
 use ArtisanPackUI\MicrosoftOAuth\Exceptions\OAuthException;
 use ArtisanPackUI\MicrosoftOAuth\Models\MicrosoftConnection;
+use ArtisanPackUI\MicrosoftOAuth\Scopes\ScopeRegistry;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Contracts\Session\Session;
 use Illuminate\Database\QueryException;
@@ -45,25 +46,11 @@ class OAuthManager
 
     protected const SESSION_USER_ID  = 'microsoft_oauth.user_id';
 
-    /**
-     * Scopes we always request. `offline_access` guarantees a refresh token;
-     * `openid`, `profile`, and `email` identify the connecting user via the
-     * returned `id_token`. Service packages layer their own scopes on top
-     * through the scope registry (issue #4).
-     *
-     * @var list<string>
-     */
-    protected array $baselineScopes = [
-        'openid',
-        'profile',
-        'email',
-        'offline_access',
-    ];
-
     public function __construct(
         protected ConfigRepository $config,
         protected Session $session,
         protected HttpFactory $http,
+        protected ScopeRegistry $scopes,
     ) {
     }
 
@@ -295,7 +282,10 @@ class OAuthManager
     }
 
     /**
-     * Merge caller-supplied scopes with the baseline, deduplicated.
+     * Merge caller-supplied scopes with those contributed by the
+     * {@see ScopeRegistry} (baseline identity scopes + anything registered
+     * via the `ap.microsoft.oauth.scopes` filter or imperatively),
+     * deduplicated.
      *
      * @param  array<int, string>  $additional
      *
@@ -303,7 +293,7 @@ class OAuthManager
      */
     protected function mergeScopes( array $additional ): array
     {
-        $merged = array_merge( $this->baselineScopes, array_map( 'strval', $additional ) );
+        $merged = array_merge( $this->scopes->all(), array_map( 'strval', $additional ) );
         $merged = array_map( 'trim', $merged );
         $merged = array_filter( $merged, static fn ( string $s ): bool => '' !== $s );
 

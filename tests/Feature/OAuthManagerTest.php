@@ -2,6 +2,7 @@
 
 declare( strict_types=1 );
 
+use ArtisanPackUI\Hooks\Facades\Filter;
 use ArtisanPackUI\MicrosoftOAuth\Exceptions\OAuthException;
 use ArtisanPackUI\MicrosoftOAuth\Models\MicrosoftConnection;
 use ArtisanPackUI\MicrosoftOAuth\OAuth\OAuthManager;
@@ -56,6 +57,19 @@ it( 'builds an authorization URL with PKCE, state, and offline_access', function
     expect( session( 'microsoft_oauth.state' ) )->toBe( $query[ 'state' ] );
     expect( session( 'microsoft_oauth.verifier' ) )->not->toBeEmpty();
     expect( session( 'microsoft_oauth.user_id' ) )->toBe( 42 );
+} );
+
+it( 'includes scopes contributed via the ap.microsoft.oauth.scopes filter in the authorization URL', function (): void {
+    Filter::add( 'ap.microsoft.oauth.scopes', fn ( array $s ): array => array_merge( $s, [
+        'https://graph.microsoft.com/User.Read',
+    ] ) );
+
+    $url = makeManager()->authorizationUrl( 1 );
+
+    parse_str( parse_url( $url, PHP_URL_QUERY ), $query );
+
+    expect( $query[ 'scope' ] )->toContain( 'https://graph.microsoft.com/User.Read' );
+    expect( $query[ 'scope' ] )->toContain( 'offline_access' );
 } );
 
 it( 'honors the configured tenant when building endpoints', function (): void {
