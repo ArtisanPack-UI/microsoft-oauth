@@ -22,7 +22,9 @@ return [
     | client_secret, tenant). `config` reads the values below from
     | config/env files and is read-only. `database` reads and writes them
     | to the `microsoft_oauth_configurations` table, with the client secret
-    | encrypted at rest via Laravel's Encrypter.
+    | encrypted at rest via Laravel's Encrypter. `cms` bridges to the
+    | artisanpack-ui/cms-framework Settings module for admin-editable
+    | credentials (only available when the CMS framework is installed).
     |
     */
 

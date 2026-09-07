@@ -17,6 +17,7 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\MicrosoftOAuth;
 
+use ArtisanPackUI\MicrosoftOAuth\Configuration\CmsSettingsDriver;
 use ArtisanPackUI\MicrosoftOAuth\Configuration\ConfigDriver;
 use ArtisanPackUI\MicrosoftOAuth\Configuration\DatabaseDriver;
 use ArtisanPackUI\MicrosoftOAuth\Contracts\ConfigurationRepository;
@@ -71,6 +72,13 @@ class MicrosoftOAuthServiceProvider extends ServiceProvider
             ),
         );
 
+        // Scoped for the same reason as DatabaseDriver: the per-request cache
+        // must not survive across Octane requests or queue jobs.
+        $this->app->scoped(
+            CmsSettingsDriver::class,
+            fn ( Application $app ): CmsSettingsDriver => new CmsSettingsDriver( $app[ 'encrypter' ] ),
+        );
+
         // Bind (not singleton) so `config('microsoft-oauth.driver')` is re-read
         // on each resolve; the concrete driver classes are singletons in their
         // own right and hold the per-request cache.
@@ -79,6 +87,7 @@ class MicrosoftOAuthServiceProvider extends ServiceProvider
 
             return match ( $driver ) {
                 'database' => $app->make( DatabaseDriver::class ),
+                'cms'      => $app->make( CmsSettingsDriver::class ),
                 default    => $app->make( ConfigDriver::class ),
             };
         } );
@@ -126,5 +135,60 @@ class MicrosoftOAuthServiceProvider extends ServiceProvider
                 __DIR__ . '/../database/migrations' => database_path( 'migrations' ),
             ], 'microsoft-oauth-migrations' );
         }
+
+        $this->registerCmsSettings();
+    }
+
+    /**
+     * Register OAuth-credential settings with the CMS framework when it is
+     * installed. No-op otherwise — the base package must not hard-depend on
+     * the CMS framework.
+     *
+     * Runs inside `$this->app->booted()` because the CMS-framework helpers
+     * (apRegisterSetting / apGetSetting / apUpdateSetting) are declared from
+     * that package's own boot() method, and Laravel's provider boot order is
+     * not deterministic. If MicrosoftOAuthServiceProvider happens to boot
+     * first, registering directly from this class's boot() would silently
+     * skip the three keys and the CMS Settings UI would never expose them.
+     *
+     * @since 1.0.0
+     */
+    protected function registerCmsSettings(): void
+    {
+        $this->app->booted( function (): void {
+            if ( ! function_exists( 'apRegisterSetting' ) ) {
+                return;
+            }
+
+            $encrypter = $this->app[ 'encrypter' ];
+
+            $trim = static function ( mixed $value ): ?string {
+                if ( null === $value || '' === $value ) {
+                    return null;
+                }
+
+                return trim( (string) $value );
+            };
+
+            // The client secret is written to the CMS Settings row by two
+            // paths: `$driver->save()` (driver → apUpdateSetting) and the
+            // CMS Settings UI (operator → apUpdateSetting directly). Owning
+            // encryption inside the sanitize callback makes both paths write
+            // ciphertext, so the read-side decryption always sees an
+            // encrypted value.
+            $encryptSecret = static function ( mixed $value ) use ( $encrypter, $trim ): ?string {
+                $trimmed = $trim( $value );
+
+                if ( null === $trimmed ) {
+                    return null;
+                }
+
+                return $encrypter->encryptString( $trimmed );
+            };
+
+            apRegisterSetting( CmsSettingsDriver::KEY_CLIENT_ID, null, $trim );
+            apRegisterSetting( CmsSettingsDriver::KEY_CLIENT_SECRET, null, $encryptSecret );
+            apRegisterSetting( CmsSettingsDriver::KEY_TENANT, null, $trim );
+        } );
     }
 }
