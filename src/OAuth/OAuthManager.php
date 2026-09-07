@@ -14,7 +14,7 @@ declare( strict_types=1 );
 namespace ArtisanPackUI\MicrosoftOAuth\OAuth;
 
 use ArtisanPackUI\MicrosoftOAuth\Exceptions\OAuthException;
-use ArtisanPackUI\MicrosoftOAuth\Support\TokenPayload;
+use ArtisanPackUI\MicrosoftOAuth\Models\MicrosoftConnection;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Contracts\Session\Session;
 use Illuminate\Http\Client\Factory as HttpFactory;
@@ -26,8 +26,9 @@ use Illuminate\Support\Str;
  *
  * `authorizationUrl()` builds the URL to send the user to, stashing `state`
  * and the PKCE `code_verifier` in the session. `handleCallback()` validates
- * `state`, exchanges the returned `code` for tokens, and returns a
- * {@see TokenPayload} value object.
+ * `state`, exchanges the returned `code` for tokens, and persists the
+ * connection as a {@see MicrosoftConnection} with encrypted access +
+ * refresh tokens (Laravel `Crypt`).
  *
  * The `offline_access` scope is always requested so Microsoft returns a
  * refresh token — a hard requirement for downstream integrations that need
@@ -104,11 +105,18 @@ class OAuthManager
     }
 
     /**
-     * Handle the OAuth callback: verify state, exchange the code, return tokens.
+     * Handle the OAuth callback: verify state, exchange the code, and
+     * persist the resulting tokens on a {@see MicrosoftConnection}.
+     *
+     * Access and refresh tokens are stored encrypted via Laravel's
+     * `encrypted` cast on the model. The returned model is either newly
+     * created or updated in place for the connecting user, so downstream
+     * code can wire the callback directly into service-specific
+     * bootstrapping without another DB round-trip.
      *
      * @since 1.0.0
      */
-    public function handleCallback( string $code, string $returnedState ): TokenPayload
+    public function handleCallback( string $code, string $returnedState ): MicrosoftConnection
     {
         $storedState = $this->session->pull( self::SESSION_STATE );
         $verifier    = $this->session->pull( self::SESSION_VERIFIER );
@@ -175,17 +183,28 @@ class OAuthManager
 
         [ $microsoftUserId, $email ] = $this->extractIdentity( $payload[ 'id_token' ] ?? null );
 
-        return new TokenPayload(
-            accessToken:     (string) $payload[ 'access_token' ],
-            refreshToken:    isset( $payload[ 'refresh_token' ] ) ? (string) $payload[ 'refresh_token' ] : null,
-            tokenType:       (string) ( $payload[ 'token_type' ] ?? 'Bearer' ),
-            scopes:          $scopes,
-            expiresAt:       $expiresAt,
-            idToken:         isset( $payload[ 'id_token' ] ) ? (string) $payload[ 'id_token' ] : null,
-            microsoftUserId: $microsoftUserId,
-            email:           $email,
-            userId:          $userId,
-        );
+        $connection = MicrosoftConnection::firstOrNew( [ 'user_id' => $userId ] );
+
+        $connection->microsoft_user_id = $microsoftUserId ?? $connection->microsoft_user_id;
+        $connection->email             = $email ?? $connection->email;
+        $connection->access_token      = (string) $payload[ 'access_token' ];
+        $connection->token_type        = (string) ( $payload[ 'token_type' ] ?? 'Bearer' );
+        $connection->scopes            = $scopes;
+        $connection->expires_at        = $expiresAt;
+        $connection->status            = MicrosoftConnection::STATUS_CONNECTED;
+        $connection->disconnect_reason = null;
+
+        // Microsoft returns a refresh_token on every successful exchange
+        // when `offline_access` is granted (unlike Google, which only issues
+        // it on first consent). Still guard against a missing value so an
+        // unexpected response can't wipe the existing token on file.
+        if ( ! empty( $payload[ 'refresh_token' ] ) ) {
+            $connection->refresh_token = (string) $payload[ 'refresh_token' ];
+        }
+
+        $connection->save();
+
+        return $connection;
     }
 
     /**

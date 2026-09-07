@@ -18,6 +18,7 @@ declare( strict_types=1 );
 namespace ArtisanPackUI\MicrosoftOAuth;
 
 use ArtisanPackUI\MicrosoftOAuth\OAuth\OAuthManager;
+use ArtisanPackUI\MicrosoftOAuth\Tokens\TokenManager;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\ServiceProvider;
 
@@ -54,6 +55,13 @@ class MicrosoftOAuthServiceProvider extends ServiceProvider
                 $app->make( HttpFactory::class ),
             );
         } );
+
+        $this->app->singleton( TokenManager::class, function ( $app ) {
+            return new TokenManager(
+                $app->make( 'config' ),
+                $app->make( HttpFactory::class ),
+            );
+        } );
     }
 
     /**
@@ -64,11 +72,16 @@ class MicrosoftOAuthServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->loadRoutesFrom( __DIR__ . '/../routes/web.php' );
+        $this->loadMigrationsFrom( __DIR__ . '/../database/migrations' );
 
         if ( $this->app->runningInConsole() ) {
             $this->publishes( [
                 __DIR__ . '/../config/microsoft-oauth.php' => config_path( 'microsoft-oauth.php' ),
             ], 'microsoft-oauth-config' );
+
+            $this->publishes( [
+                __DIR__ . '/../database/migrations' => database_path( 'migrations' ),
+            ], 'microsoft-oauth-migrations' );
         }
     }
 }
