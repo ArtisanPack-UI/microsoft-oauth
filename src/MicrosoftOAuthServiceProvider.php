@@ -17,14 +17,12 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\MicrosoftOAuth;
 
+use ArtisanPackUI\MicrosoftOAuth\OAuth\OAuthManager;
+use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\ServiceProvider;
 
 /**
  * Service provider for the MicrosoftOAuth package.
- *
- * Bootstraps the package by registering services and bindings. Extend this
- * class with the package's configuration, migrations, routes, views, and
- * other service registrations as features are added.
  *
  * @package    ArtisanPack_UI
  * @subpackage MicrosoftOAuth
@@ -36,34 +34,41 @@ class MicrosoftOAuthServiceProvider extends ServiceProvider
     /**
      * Registers any application services.
      *
-     * Binds the MicrosoftOAuth class as a singleton in the container.
-     *
      * @since 1.0.0
-     *
-     * @return void
      */
     public function register(): void
     {
+        $this->mergeConfigFrom(
+            __DIR__ . '/../config/microsoft-oauth.php',
+            'microsoft-oauth',
+        );
+
         $this->app->singleton( 'microsoft-oauth', function ( $app ) {
             return new MicrosoftOAuth();
+        } );
+
+        $this->app->singleton( OAuthManager::class, function ( $app ) {
+            return new OAuthManager(
+                $app->make( 'config' ),
+                $app->make( 'session.store' ),
+                $app->make( HttpFactory::class ),
+            );
         } );
     }
 
     /**
      * Bootstraps any application services.
      *
-     * Add package bootstrapping here such as:
-     * - Configuration publishing: $this->publishes([...])
-     * - Migration loading: $this->loadMigrationsFrom(...)
-     * - View loading: $this->loadViewsFrom(...)
-     * - Route loading: $this->loadRoutesFrom(...)
-     *
      * @since 1.0.0
-     *
-     * @return void
      */
     public function boot(): void
     {
-        // Add your package bootstrapping here
+        $this->loadRoutesFrom( __DIR__ . '/../routes/web.php' );
+
+        if ( $this->app->runningInConsole() ) {
+            $this->publishes( [
+                __DIR__ . '/../config/microsoft-oauth.php' => config_path( 'microsoft-oauth.php' ),
+            ], 'microsoft-oauth-config' );
+        }
     }
 }
