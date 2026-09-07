@@ -2,7 +2,7 @@
 name: Task
 about: Create a task for development work
 title: ''
-labels: task
+labels: task, Status::Backlog
 assignees: ''
 ---
 

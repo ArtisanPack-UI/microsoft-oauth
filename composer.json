@@ -3,7 +3,6 @@
   "description": "Shared Microsoft identity platform (Entra / Azure AD) OAuth2 authentication, token storage/refresh, and scope management that powers ArtisanPack UI's Microsoft service integrations.",
   "type": "library",
   "license": "MIT",
-  "version": "1.0.0",
   "keywords": [
     "laravel",
     "microsoft",

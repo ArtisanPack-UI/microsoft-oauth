@@ -37,6 +37,9 @@ jobs:
       - name: Install dependencies
         run: composer install --no-interaction --prefer-dist --optimize-autoloader
 
+      - name: Run lint
+        run: composer lint
+
       - name: Upload vendor directory
         uses: actions/upload-artifact@v4
         with:
@@ -84,7 +87,7 @@ jobs:
         run: php vendor/bin/pest tests/Feature --no-coverage
 
   release:
-    needs: test
+    needs: [build, test]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     name: Create Release
@@ -102,8 +105,13 @@ jobs:
           echo "Extracting notes for version $VERSION"
 
           if [ -f "CHANGELOG.md" ]; then
-            # Extract section for this version
-            NOTES=$(sed -n "/## \[$VERSION\]/,/## \[/p" CHANGELOG.md | sed '1d;$d' | sed '/^$/d')
+            # Extract section for this version; stop at the next "## [" heading
+            # if one exists, otherwise take the rest of the file.
+            NOTES=$(awk -v ver="$VERSION" '
+              $0 ~ "^## \\[" ver "\\]" { capture = 1; next }
+              capture && /^## \[/ { exit }
+              capture { print }
+            ' CHANGELOG.md | sed '/^$/d')
             if [ -z "$NOTES" ]; then
               NOTES="Release $VERSION. See CHANGELOG.md for details."
             fi
