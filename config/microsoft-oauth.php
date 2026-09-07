@@ -15,13 +15,29 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Configuration Repository Driver
+    |--------------------------------------------------------------------------
+    |
+    | Which storage driver backs the app credentials (client_id,
+    | client_secret, tenant). `config` reads the values below from
+    | config/env files and is read-only. `database` reads and writes them
+    | to the `microsoft_oauth_configurations` table, with the client secret
+    | encrypted at rest via Laravel's Encrypter.
+    |
+    */
+
+    'driver'        => env( 'MICROSOFT_OAUTH_DRIVER', 'config' ),
+
+    /*
+    |--------------------------------------------------------------------------
     | Application (Client) Credentials
     |--------------------------------------------------------------------------
     |
     | The `client_id` and `client_secret` from your Entra / Azure AD app
     | registration. Public clients (SPA / native) may omit `client_secret` and
     | rely on PKCE alone. Confidential clients (web apps) should always provide
-    | the secret.
+    | the secret. When the `database` driver is active, these values are read
+    | from the `microsoft_oauth_configurations` table instead.
     |
     */
 

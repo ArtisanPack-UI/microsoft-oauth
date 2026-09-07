@@ -17,9 +17,13 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\MicrosoftOAuth;
 
+use ArtisanPackUI\MicrosoftOAuth\Configuration\ConfigDriver;
+use ArtisanPackUI\MicrosoftOAuth\Configuration\DatabaseDriver;
+use ArtisanPackUI\MicrosoftOAuth\Contracts\ConfigurationRepository;
 use ArtisanPackUI\MicrosoftOAuth\OAuth\OAuthManager;
 use ArtisanPackUI\MicrosoftOAuth\Scopes\ScopeRegistry;
 use ArtisanPackUI\MicrosoftOAuth\Tokens\TokenManager;
+use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\ServiceProvider;
 
@@ -49,10 +53,36 @@ class MicrosoftOAuthServiceProvider extends ServiceProvider
             return new MicrosoftOAuth();
         } );
 
+        $this->app->singleton(
+            ConfigDriver::class,
+            fn ( Application $app ): ConfigDriver => new ConfigDriver( $app[ 'config' ] ),
+        );
+
+        $this->app->singleton(
+            DatabaseDriver::class,
+            fn ( Application $app ): DatabaseDriver => new DatabaseDriver(
+                $app[ 'db' ]->connection(),
+                $app[ 'encrypter' ],
+            ),
+        );
+
+        // Bind (not singleton) so `config('microsoft-oauth.driver')` is re-read
+        // on each resolve; the concrete driver classes are singletons in their
+        // own right and hold the per-request cache.
+        $this->app->bind( ConfigurationRepository::class, function ( Application $app ): ConfigurationRepository {
+            $driver = $app[ 'config' ]->get( 'microsoft-oauth.driver', 'config' );
+
+            return match ( $driver ) {
+                'database' => $app->make( DatabaseDriver::class ),
+                default    => $app->make( ConfigDriver::class ),
+            };
+        } );
+
         $this->app->singleton( ScopeRegistry::class );
 
-        $this->app->singleton( OAuthManager::class, function ( $app ) {
+        $this->app->singleton( OAuthManager::class, function ( Application $app ): OAuthManager {
             return new OAuthManager(
+                $app->make( ConfigurationRepository::class ),
                 $app->make( 'config' ),
                 $app->make( 'session.store' ),
                 $app->make( HttpFactory::class ),
@@ -60,9 +90,9 @@ class MicrosoftOAuthServiceProvider extends ServiceProvider
             );
         } );
 
-        $this->app->singleton( TokenManager::class, function ( $app ) {
+        $this->app->singleton( TokenManager::class, function ( Application $app ): TokenManager {
             return new TokenManager(
-                $app->make( 'config' ),
+                $app->make( ConfigurationRepository::class ),
                 $app->make( HttpFactory::class ),
             );
         } );

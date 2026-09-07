@@ -13,9 +13,9 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\MicrosoftOAuth\Tokens;
 
+use ArtisanPackUI\MicrosoftOAuth\Contracts\ConfigurationRepository;
 use ArtisanPackUI\MicrosoftOAuth\Exceptions\TokenRefreshException;
 use ArtisanPackUI\MicrosoftOAuth\Models\MicrosoftConnection;
-use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\Carbon;
 
@@ -48,7 +48,7 @@ class TokenManager
     ];
 
     public function __construct(
-        protected ConfigRepository $config,
+        protected ConfigurationRepository $credentials,
         protected HttpFactory $http,
     ) {
     }
@@ -88,12 +88,12 @@ class TokenManager
             throw new TokenRefreshException( __( 'No refresh token stored for this connection.' ) );
         }
 
-        $clientId = (string) $this->config->get( 'microsoft-oauth.client_id', '' );
+        $clientId = (string) ( $this->credentials->getClientId() ?? '' );
         $scopes   = $connection->grantedScopes();
 
         if ( '' === $clientId ) {
             throw new TokenRefreshException(
-                __( 'Microsoft OAuth is not configured: microsoft-oauth.client_id is missing.' ),
+                __( 'Microsoft OAuth is not configured: client_id is missing.' ),
             );
         }
 
@@ -110,7 +110,7 @@ class TokenManager
             $body[ 'scope' ] = implode( ' ', $scopes );
         }
 
-        $secret = (string) $this->config->get( 'microsoft-oauth.client_secret', '' );
+        $secret = (string) ( $this->credentials->getClientSecret() ?? '' );
         if ( '' !== $secret ) {
             $body[ 'client_secret' ] = $secret;
         }
@@ -172,7 +172,7 @@ class TokenManager
 
     protected function tokenEndpoint(): string
     {
-        $tenant = (string) $this->config->get( 'microsoft-oauth.tenant', 'common' );
+        $tenant = (string) ( $this->credentials->getTenant() ?? 'common' );
         $tenant = '' === $tenant ? 'common' : $tenant;
 
         return "https://login.microsoftonline.com/{$tenant}/oauth2/v2.0/token";

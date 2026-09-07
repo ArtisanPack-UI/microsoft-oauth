@@ -1,0 +1,89 @@
+<?php
+
+declare( strict_types=1 );
+
+use ArtisanPackUI\MicrosoftOAuth\Configuration\DatabaseDriver;
+use ArtisanPackUI\MicrosoftOAuth\Contracts\ConfigurationRepository;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\DB;
+
+uses( RefreshDatabase::class );
+
+beforeEach( function (): void {
+    config()->set( 'microsoft-oauth.driver', 'database' );
+} );
+
+it( 'uses the database driver when configured', function (): void {
+    expect( app( ConfigurationRepository::class ) )->toBeInstanceOf( DatabaseDriver::class );
+} );
+
+it( 'persists and reads credentials with an encrypted secret', function (): void {
+    /** @var DatabaseDriver $driver */
+    $driver = app( ConfigurationRepository::class );
+
+    $driver->save( [
+        'client_id'     => 'app-1',
+        'client_secret' => 'super-secret',
+        'tenant'        => 'contoso.onmicrosoft.com',
+    ] );
+
+    expect( $driver->getClientId() )->toBe( 'app-1' );
+    expect( $driver->getClientSecret() )->toBe( 'super-secret' );
+    expect( $driver->getTenant() )->toBe( 'contoso.onmicrosoft.com' );
+    expect( $driver->isConfigured() )->toBeTrue();
+
+    $stored = DB::table( 'microsoft_oauth_configurations' )->first();
+    expect( $stored->client_secret )->not->toBe( 'super-secret' );
+} );
+
+it( 'updates the existing row on subsequent saves', function (): void {
+    /** @var DatabaseDriver $driver */
+    $driver = app( ConfigurationRepository::class );
+
+    $driver->save( [
+        'client_id'     => 'app-1',
+        'client_secret' => 's1',
+        'tenant'        => 'contoso.onmicrosoft.com',
+    ] );
+
+    // Fresh instance to bypass the driver's per-request cache.
+    app()->forgetInstance( DatabaseDriver::class );
+    /** @var DatabaseDriver $driver */
+    $driver = app( ConfigurationRepository::class );
+
+    $driver->save( [
+        'client_id'     => 'app-2',
+        'client_secret' => 's2',
+        'tenant'        => 'fabrikam.onmicrosoft.com',
+    ] );
+
+    expect( DB::table( 'microsoft_oauth_configurations' )->count() )->toBe( 1 );
+    expect( $driver->getClientId() )->toBe( 'app-2' );
+    expect( $driver->getTenant() )->toBe( 'fabrikam.onmicrosoft.com' );
+} );
+
+it( 'stores a null client_secret for public clients', function (): void {
+    /** @var DatabaseDriver $driver */
+    $driver = app( ConfigurationRepository::class );
+
+    $driver->save( [
+        'client_id'     => 'app-1',
+        'client_secret' => null,
+        'tenant'        => 'common',
+    ] );
+
+    $stored = DB::table( 'microsoft_oauth_configurations' )->first();
+    expect( $stored->client_secret )->toBeNull();
+    expect( $driver->getClientSecret() )->toBeNull();
+    expect( $driver->isConfigured() )->toBeTrue();
+} );
+
+it( 'returns null values when no configuration row exists', function (): void {
+    /** @var DatabaseDriver $driver */
+    $driver = app( ConfigurationRepository::class );
+
+    expect( $driver->getClientId() )->toBeNull();
+    expect( $driver->getClientSecret() )->toBeNull();
+    expect( $driver->getTenant() )->toBeNull();
+    expect( $driver->isConfigured() )->toBeFalse();
+} );
