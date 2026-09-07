@@ -13,6 +13,7 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\MicrosoftOAuth\OAuth;
 
+use ArtisanPackUI\MicrosoftOAuth\Contracts\ConfigurationRepository;
 use ArtisanPackUI\MicrosoftOAuth\Exceptions\OAuthException;
 use ArtisanPackUI\MicrosoftOAuth\Models\MicrosoftConnection;
 use ArtisanPackUI\MicrosoftOAuth\Scopes\ScopeRegistry;
@@ -47,6 +48,7 @@ class OAuthManager
     protected const SESSION_USER_ID  = 'microsoft_oauth.user_id';
 
     public function __construct(
+        protected ConfigurationRepository $credentials,
         protected ConfigRepository $config,
         protected Session $session,
         protected HttpFactory $http,
@@ -64,7 +66,7 @@ class OAuthManager
      */
     public function authorizationUrl( int|string $userId, array $additionalScopes = [] ): string
     {
-        $clientId = $this->requireConfig( 'microsoft-oauth.client_id' );
+        $clientId = $this->requireClientId();
         $redirect = $this->requireConfig( 'microsoft-oauth.redirect_uri' );
 
         $state     = Str::random( 40 );
@@ -123,7 +125,7 @@ class OAuthManager
         }
 
         $body = [
-            'client_id'     => $this->requireConfig( 'microsoft-oauth.client_id' ),
+            'client_id'     => $this->requireClientId(),
             'redirect_uri'  => $this->requireConfig( 'microsoft-oauth.redirect_uri' ),
             'grant_type'    => 'authorization_code',
             'code'          => $code,
@@ -133,7 +135,7 @@ class OAuthManager
 
         // Confidential clients (web apps registered with a secret) send the
         // secret; public clients (SPA / native) rely on PKCE alone.
-        $secret = (string) $this->config->get( 'microsoft-oauth.client_secret', '' );
+        $secret = (string) ( $this->credentials->getClientSecret() ?? '' );
         if ( '' !== $secret ) {
             $body[ 'client_secret' ] = $secret;
         }
@@ -363,10 +365,23 @@ class OAuthManager
 
     protected function buildEndpoint( string $type ): string
     {
-        $tenant = (string) $this->config->get( 'microsoft-oauth.tenant', 'common' );
+        $tenant = (string) ( $this->credentials->getTenant() ?? 'common' );
         $tenant = '' === $tenant ? 'common' : $tenant;
 
         return "https://login.microsoftonline.com/{$tenant}/oauth2/v2.0/{$type}";
+    }
+
+    protected function requireClientId(): string
+    {
+        $clientId = (string) ( $this->credentials->getClientId() ?? '' );
+
+        if ( '' === $clientId ) {
+            throw new OAuthException(
+                __( 'Microsoft OAuth is not configured: client_id is missing.' ),
+            );
+        }
+
+        return $clientId;
     }
 
     protected function requireConfig( string $key ): string
