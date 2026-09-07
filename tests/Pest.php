@@ -11,6 +11,8 @@
 |
 */
 
+require_once __DIR__ . '/Support/CmsSettingsStub.php';
+
 pest()->extend( Tests\TestCase::class )
  // ->use(Illuminate\Foundation\Testing\RefreshDatabase::class)
     ->in( 'Feature' );
