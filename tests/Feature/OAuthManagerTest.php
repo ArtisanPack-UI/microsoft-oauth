@@ -7,6 +7,7 @@ use ArtisanPackUI\MicrosoftOAuth\Models\MicrosoftConnection;
 use ArtisanPackUI\MicrosoftOAuth\OAuth\OAuthManager;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Crypt;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 
 beforeEach( function (): void {
@@ -250,6 +251,65 @@ it( 'preserves the stored refresh token when the exchange response omits it', fu
     $connection = makeManager()->handleCallback( 'code-3', 'state-3' );
 
     expect( $connection->refresh_token )->toBe( 'preserved-refresh' );
+} );
+
+it( 'recovers when a concurrent callback for the same user wins the insert race', function (): void {
+    // Simulate the race: `firstOrNew` sees no row (nothing has been
+    // inserted yet), but between that check and our `save()`, a
+    // concurrent callback inserts the row first — our INSERT then
+    // hits the unique(user_id) index and throws. The manager must
+    // recover by re-fetching and applying our fresh tokens.
+    $raceFired = false;
+    MicrosoftConnection::creating( function ( MicrosoftConnection $model ) use ( &$raceFired ): void {
+        if ( $raceFired ) {
+            return;
+        }
+
+        if ( 42 !== $model->user_id ) {
+            return;
+        }
+
+        $raceFired = true;
+
+        // Bypass the model layer so `creating` doesn't recurse.
+        DB::table( 'microsoft_connections' )->insert( [
+            'user_id'       => 42,
+            'access_token'  => encrypt( 'race-loser-access' ),
+            'refresh_token' => encrypt( 'race-loser-refresh' ),
+            'token_type'    => 'Bearer',
+            'scopes'        => json_encode( [ 'openid' ] ),
+            'expires_at'    => Carbon::now()->subHour()->toDateTimeString(),
+            'status'        => MicrosoftConnection::STATUS_CONNECTED,
+            'created_at'    => Carbon::now(),
+            'updated_at'    => Carbon::now(),
+        ] );
+    } );
+
+    session( [
+        'microsoft_oauth.state'    => 'state-race',
+        'microsoft_oauth.verifier' => 'verifier-race',
+        'microsoft_oauth.user_id'  => 42,
+    ] );
+
+    Http::fake( [
+        'https://login.microsoftonline.com/common/oauth2/v2.0/token' => Http::response( [
+            'access_token'  => 'race-winner-access',
+            'refresh_token' => 'race-winner-refresh',
+            'token_type'    => 'Bearer',
+            'expires_in'    => 3600,
+            'scope'         => 'openid profile email offline_access',
+        ], 200 ),
+    ] );
+
+    $connection = makeManager()->handleCallback( 'code-race', 'state-race' );
+
+    MicrosoftConnection::flushEventListeners();
+
+    expect( $raceFired )->toBeTrue();
+    expect( MicrosoftConnection::count() )->toBe( 1 );
+    expect( $connection->access_token )->toBe( 'race-winner-access' );
+    expect( $connection->refresh_token )->toBe( 'race-winner-refresh' );
+    expect( $connection->status )->toBe( MicrosoftConnection::STATUS_CONNECTED );
 } );
 
 it( 'surfaces Microsoft error_description when the exchange fails', function (): void {

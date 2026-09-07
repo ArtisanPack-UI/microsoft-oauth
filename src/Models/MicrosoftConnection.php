@@ -63,7 +63,7 @@ class MicrosoftConnection extends Model
      *
      * @since 1.0.0
      *
-     * @return BelongsTo<Model, self>
+     * @return BelongsTo<Model, $this>
      */
     public function user(): BelongsTo
     {

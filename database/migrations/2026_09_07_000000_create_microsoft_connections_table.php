@@ -15,8 +15,8 @@ return new class extends Migration
             $table->unsignedBigInteger( 'user_id' );
             $table->string( 'microsoft_user_id' )->nullable();
             $table->string( 'email' )->nullable();
-            $table->text( 'access_token' )->nullable();
-            $table->text( 'refresh_token' )->nullable();
+            $table->longText( 'access_token' )->nullable();
+            $table->longText( 'refresh_token' )->nullable();
             $table->string( 'token_type' )->default( 'Bearer' );
             $table->text( 'scopes' )->nullable();
             $table->timestamp( 'expires_at' )->nullable();

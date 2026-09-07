@@ -17,6 +17,7 @@ use ArtisanPackUI\MicrosoftOAuth\Exceptions\OAuthException;
 use ArtisanPackUI\MicrosoftOAuth\Models\MicrosoftConnection;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Contracts\Session\Session;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
@@ -183,8 +184,70 @@ class OAuthManager
 
         [ $microsoftUserId, $email ] = $this->extractIdentity( $payload[ 'id_token' ] ?? null );
 
+        return $this->persistConnection(
+            $userId,
+            $microsoftUserId,
+            $email,
+            $payload,
+            $scopes,
+            $expiresAt,
+        );
+    }
+
+    /**
+     * Upsert the {@see MicrosoftConnection} for the connecting user.
+     *
+     * A duplicate-key failure from `save()` means a concurrent callback
+     * for the same user just won the race and inserted the row first —
+     * fetch that row and re-apply our tokens to it instead of losing
+     * the exchange we just performed.
+     *
+     * @since 1.0.0
+     *
+     * @param  array<string, mixed>  $payload  The parsed token response body.
+     * @param  array<int, string>  $scopes  Scopes granted by Microsoft.
+     */
+    protected function persistConnection(
+        int|string $userId,
+        ?string $microsoftUserId,
+        ?string $email,
+        array $payload,
+        array $scopes,
+        ?Carbon $expiresAt,
+    ): MicrosoftConnection {
         $connection = MicrosoftConnection::firstOrNew( [ 'user_id' => $userId ] );
 
+        $this->applyTokens( $connection, $microsoftUserId, $email, $payload, $scopes, $expiresAt );
+
+        try {
+            $connection->save();
+        } catch ( QueryException $e ) {
+            if ( ! $this->isDuplicateKeyException( $e ) ) {
+                throw $e;
+            }
+
+            $connection = MicrosoftConnection::where( 'user_id', $userId )->firstOrFail();
+            $this->applyTokens( $connection, $microsoftUserId, $email, $payload, $scopes, $expiresAt );
+            $connection->save();
+        }
+
+        return $connection;
+    }
+
+    /**
+     * Copy the exchange-response fields onto the connection.
+     *
+     * @param  array<string, mixed>  $payload
+     * @param  array<int, string>  $scopes
+     */
+    protected function applyTokens(
+        MicrosoftConnection $connection,
+        ?string $microsoftUserId,
+        ?string $email,
+        array $payload,
+        array $scopes,
+        ?Carbon $expiresAt,
+    ): void {
         $connection->microsoft_user_id = $microsoftUserId ?? $connection->microsoft_user_id;
         $connection->email             = $email ?? $connection->email;
         $connection->access_token      = (string) $payload[ 'access_token' ];
@@ -201,10 +264,34 @@ class OAuthManager
         if ( ! empty( $payload[ 'refresh_token' ] ) ) {
             $connection->refresh_token = (string) $payload[ 'refresh_token' ];
         }
+    }
 
-        $connection->save();
+    /**
+     * Detect the driver-specific duplicate-key error raised when a concurrent
+     * insert for the same `user_id` hits our unique index first.
+     *
+     * MySQL uses SQLSTATE 23000 (integrity constraint violation) with vendor
+     * code 1062; Postgres uses 23505 (unique_violation); SQLite reports
+     * SQLSTATE 23000 with vendor code 19 and "UNIQUE constraint failed" in
+     * the message.
+     *
+     * @since 1.0.0
+     */
+    protected function isDuplicateKeyException( QueryException $e ): bool
+    {
+        if ( '23505' === $e->getCode() ) {
+            return true;
+        }
 
-        return $connection;
+        if ( '23000' !== $e->getCode() ) {
+            return false;
+        }
+
+        $message = $e->getMessage();
+
+        return str_contains( $message, '1062' )
+            || str_contains( $message, 'UNIQUE constraint failed' )
+            || str_contains( $message, 'Duplicate entry' );
     }
 
     /**
