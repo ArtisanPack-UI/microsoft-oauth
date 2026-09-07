@@ -18,6 +18,7 @@ declare( strict_types=1 );
 namespace ArtisanPackUI\MicrosoftOAuth;
 
 use ArtisanPackUI\MicrosoftOAuth\OAuth\OAuthManager;
+use ArtisanPackUI\MicrosoftOAuth\Scopes\ScopeRegistry;
 use ArtisanPackUI\MicrosoftOAuth\Tokens\TokenManager;
 use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Support\ServiceProvider;
@@ -48,11 +49,14 @@ class MicrosoftOAuthServiceProvider extends ServiceProvider
             return new MicrosoftOAuth();
         } );
 
+        $this->app->singleton( ScopeRegistry::class );
+
         $this->app->singleton( OAuthManager::class, function ( $app ) {
             return new OAuthManager(
                 $app->make( 'config' ),
                 $app->make( 'session.store' ),
                 $app->make( HttpFactory::class ),
+                $app->make( ScopeRegistry::class ),
             );
         } );
 
