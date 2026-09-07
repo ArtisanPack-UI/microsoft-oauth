@@ -1,0 +1,76 @@
+{
+  "name": "artisanpack-ui/microsoft-oauth",
+  "description": "Shared Microsoft identity platform (Entra / Azure AD) OAuth2 authentication, token storage/refresh, and scope management that powers ArtisanPack UI's Microsoft service integrations.",
+  "type": "library",
+  "license": "MIT",
+  "version": "1.0.0",
+  "keywords": [
+    "laravel",
+    "microsoft",
+    "entra",
+    "azure-ad",
+    "oauth",
+    "oauth2",
+    "artisanpack-ui"
+  ],
+  "autoload": {
+    "psr-4": {
+      "ArtisanPackUI\\MicrosoftOAuth\\": "src/"
+    },
+    "files": [
+      "src/helpers.php"
+    ]
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Tests\\": "tests/"
+    }
+  },
+  "authors": [
+    {
+      "name": "Jacob Martella",
+      "email": "me@jacobmartella.com"
+    }
+  ],
+  "require": {
+    "php": "^8.2",
+    "illuminate/support": "^10.0|^11.0|^12.0|^13.0",
+    "artisanpack-ui/core": "^1.0"
+  },
+  "require-dev": {
+    "pestphp/pest": "^3.8|^4.0",
+    "pestphp/pest-plugin-laravel": "^3.2|^4.1",
+    "artisanpack-ui/code-style": "^1.1",
+    "artisanpack-ui/code-style-pint": "^1.1",
+    "dealerdirect/phpcodesniffer-composer-installer": "^1.0",
+    "laravel/pint": "^1.26",
+    "orchestra/testbench": "^10.2|^11.0",
+    "friendsofphp/php-cs-fixer": "^3.75"
+  },
+  "scripts": {
+    "lint": [
+      "./vendor/bin/php-cs-fixer fix --dry-run --diff",
+      "./vendor/bin/phpcs"
+    ],
+    "fix": "./vendor/bin/php-cs-fixer fix",
+    "cs": "./vendor/bin/phpcs",
+    "cs:fix": "./vendor/bin/phpcbf",
+    "test": "./vendor/bin/pest"
+  },
+  "config": {
+    "allow-plugins": {
+      "pestphp/pest-plugin": true,
+      "dealerdirect/phpcodesniffer-composer-installer": true
+    }
+  },
+  "extra": {
+    "laravel": {
+      "providers": [
+        "ArtisanPackUI\\MicrosoftOAuth\\MicrosoftOAuthServiceProvider"
+      ],
+      "aliases": {
+        "MicrosoftOAuth": "ArtisanPackUI\\MicrosoftOAuth\\Facades\\MicrosoftOAuth"
+      }
+    }
+  }
+}

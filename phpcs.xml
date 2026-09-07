@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<ruleset name="ArtisanPackUI Microsoft OAuth">
+    <description>ArtisanPack UI coding standard for the Microsoft OAuth package</description>
+
+    <!-- Set arguments -->
+    <arg name="colors"/>
+    <arg value="sp"/>
+
+    <!-- Paths to check -->
+    <file>src</file>
+    <file>tests</file>
+
+    <!-- Exclude paths -->
+    <exclude-pattern>*/vendor/*</exclude-pattern>
+    <exclude-pattern>*/node_modules/*</exclude-pattern>
+
+    <!--
+    NOTE: PHP-CS-Fixer handles most formatting rules (spacing, alignment, braces, etc.)
+    PHPCS is used here for rules that PHP-CS-Fixer cannot enforce.
+    -->
+
+    <!-- Functions sniffs - catch disallowed functions like die(), var_dump() -->
+    <rule ref="ArtisanPackUIStandard.Functions.DisallowedFunctions"/>
+
+    <!-- PHP sniffs -->
+    <rule ref="ArtisanPackUIStandard.PHP.PhpTags"/>
+
+    <!-- Disable line length checks -->
+    <rule ref="Generic.Files.LineLength">
+        <severity>0</severity>
+    </rule>
+</ruleset>
