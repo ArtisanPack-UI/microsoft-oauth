@@ -14,6 +14,7 @@ declare( strict_types=1 );
 namespace ArtisanPackUI\MicrosoftOAuth\Http\Controllers;
 
 use ArtisanPackUI\MicrosoftOAuth\Exceptions\OAuthException;
+use ArtisanPackUI\MicrosoftOAuth\OAuth\IncrementalConsentResult;
 use ArtisanPackUI\MicrosoftOAuth\OAuth\OAuthManager;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -51,6 +52,47 @@ class MicrosoftAuthController extends Controller
         }
 
         return redirect()->away( $url );
+    }
+
+    /**
+     * Trigger an incremental-consent re-authorization for the current user.
+     *
+     * When a consumer package registers a new scope after the account is
+     * already connected, calling this endpoint sends the user through a
+     * consent prompt for just the added scopes rather than a full
+     * disconnect + reconnect. Users without an existing connection are
+     * routed through the full connect flow; users whose connection already
+     * covers every required scope are redirected to the post-connect
+     * target with a `microsoft.status=already-authorized` flash.
+     *
+     * @since 1.0.0
+     */
+    public function reauthorize( Request $request ): RedirectResponse
+    {
+        $user = $request->user();
+
+        if ( null === $user ) {
+            abort( 401 );
+        }
+
+        try {
+            $result = $this->oauth->incrementalAuthorizationUrl( $user->getAuthIdentifier() );
+        } catch ( OAuthException $e ) {
+            return $this->redirectAfterError()->with( 'microsoft.error', $e->getMessage() );
+        }
+
+        if ( IncrementalConsentResult::NoConnection === $result ) {
+            // No account has ever been connected — hand off to the full
+            // connect flow so the user gets a real authorization prompt
+            // instead of a misleading "already authorized" flash.
+            return redirect()->route( 'microsoft.auth.connect' );
+        }
+
+        if ( IncrementalConsentResult::AlreadyAuthorized === $result ) {
+            return $this->redirectAfterConnect()->with( 'microsoft.status', 'already-authorized' );
+        }
+
+        return redirect()->away( $result );
     }
 
     /**

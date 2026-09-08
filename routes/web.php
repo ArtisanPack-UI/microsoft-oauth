@@ -19,6 +19,7 @@ Route::middleware( [ 'web', 'auth' ] )
     ->name( 'microsoft.auth.' )
     ->group( function (): void {
         Route::get( 'connect', [ MicrosoftAuthController::class, 'connect' ] )->name( 'connect' );
+        Route::get( 'reauthorize', [ MicrosoftAuthController::class, 'reauthorize' ] )->name( 'reauthorize' );
     } );
 
 Route::middleware( [ 'web' ] )
