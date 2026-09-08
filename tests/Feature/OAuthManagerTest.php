@@ -760,3 +760,137 @@ it( 'replaces (does not union) scopes on a non-incremental callback', function (
     // so a scope the user is no longer granting is dropped.
     expect( $connection->grantedScopes() )->not->toContain( 'legacy-scope' );
 } );
+
+it( 'rejects a callback when the session is missing the user id', function (): void {
+    // State + verifier are present but user_id is not — this shouldn't
+    // happen in practice (authorizationUrl always stashes all three), but a
+    // dropped session, a hand-crafted callback, or a partially-cleared
+    // session could leave us here. Persisting under a null user_id would
+    // silently create an orphan row.
+    session( [
+        'microsoft_oauth.state'    => 'state-x',
+        'microsoft_oauth.verifier' => 'verifier-x',
+    ] );
+
+    makeManager()->handleCallback( 'code-x', 'state-x' );
+} )->throws( OAuthException::class, 'user context' );
+
+it( 'throws when the code exchange returns a 2xx with an invalid payload', function (): void {
+    // Microsoft returned 200 but the body is missing access_token. Without
+    // this guard we would persist an empty-string token and every downstream
+    // Graph call would 401 with no useful error trail.
+    session( [
+        'microsoft_oauth.state'    => 'state-empty',
+        'microsoft_oauth.verifier' => 'verifier-empty',
+        'microsoft_oauth.user_id'  => 501,
+    ] );
+
+    Http::fake( [
+        'https://login.microsoftonline.com/common/oauth2/v2.0/token' => Http::response( [
+            'token_type' => 'Bearer',
+            'expires_in' => 3600,
+        ], 200 ),
+    ] );
+
+    try {
+        makeManager()->handleCallback( 'code-empty', 'state-empty' );
+        $this->fail( 'Expected OAuthException.' );
+    } catch ( OAuthException $e ) {
+        expect( $e->getMessage() )->toContain( 'invalid payload' );
+    }
+
+    expect( MicrosoftConnection::where( 'user_id', 501 )->exists() )->toBeFalse();
+} );
+
+it( 'persists a connection with null identity fields when the id_token has fewer than 3 segments', function (): void {
+    // Malformed id_token (not a valid JWT structure). Common tenant lets a
+    // null tid through, so the exchange should still succeed — but the
+    // identity claims we would have decoded must be null rather than
+    // guessed at. Regression coverage for extractIdentity's structural
+    // guard.
+    session( [
+        'microsoft_oauth.state'    => 'state-badjwt',
+        'microsoft_oauth.verifier' => 'verifier-badjwt',
+        'microsoft_oauth.user_id'  => 601,
+    ] );
+
+    Http::fake( [
+        'https://login.microsoftonline.com/common/oauth2/v2.0/token' => Http::response( [
+            'access_token' => 'access-badjwt',
+            'token_type'   => 'Bearer',
+            'expires_in'   => 3600,
+            'scope'        => 'openid profile email offline_access',
+            'id_token'     => 'not-a-jwt',
+        ], 200 ),
+    ] );
+
+    $connection = makeManager()->handleCallback( 'code-badjwt', 'state-badjwt' );
+
+    expect( $connection->microsoft_user_id )->toBeNull();
+    expect( $connection->email )->toBeNull();
+    expect( $connection->tid )->toBeNull();
+    expect( $connection->access_token )->toBe( 'access-badjwt' );
+} );
+
+it( 'persists a connection with null identity fields when the id_token payload is not valid JSON', function (): void {
+    // Three dot-separated segments but the middle segment base64-decodes to
+    // garbage. json_decode returns null; extractIdentity must bail out
+    // instead of type-casting nulls into (string)-null and silently
+    // recording literal "" for the identity columns.
+    $idToken = 'header.'
+        . rtrim( strtr( base64_encode( 'not-json' ), '+/', '-_' ), '=' )
+        . '.signature';
+
+    session( [
+        'microsoft_oauth.state'    => 'state-badjson',
+        'microsoft_oauth.verifier' => 'verifier-badjson',
+        'microsoft_oauth.user_id'  => 602,
+    ] );
+
+    Http::fake( [
+        'https://login.microsoftonline.com/common/oauth2/v2.0/token' => Http::response( [
+            'access_token' => 'access-badjson',
+            'token_type'   => 'Bearer',
+            'expires_in'   => 3600,
+            'scope'        => 'openid profile email offline_access',
+            'id_token'     => $idToken,
+        ], 200 ),
+    ] );
+
+    $connection = makeManager()->handleCallback( 'code-badjson', 'state-badjson' );
+
+    expect( $connection->microsoft_user_id )->toBeNull();
+    expect( $connection->email )->toBeNull();
+    expect( $connection->tid )->toBeNull();
+} );
+
+it( 'prefers sub over missing oid and preferred_username over missing email in the id_token', function (): void {
+    // Personal Microsoft accounts return `sub` instead of `oid`, and often
+    // `preferred_username` instead of `email`. extractIdentity should fall
+    // back cleanly rather than persist nulls when the token is well-formed.
+    session( [
+        'microsoft_oauth.state'    => 'state-personal',
+        'microsoft_oauth.verifier' => 'verifier-personal',
+        'microsoft_oauth.user_id'  => 603,
+    ] );
+
+    $idToken = makeIdToken( [
+        'sub'                => 'personal-sub-123',
+        'preferred_username' => 'personal@outlook.com',
+    ] );
+
+    Http::fake( [
+        'https://login.microsoftonline.com/common/oauth2/v2.0/token' => Http::response( [
+            'access_token' => 'access-personal',
+            'token_type'   => 'Bearer',
+            'expires_in'   => 3600,
+            'scope'        => 'openid profile email offline_access',
+            'id_token'     => $idToken,
+        ], 200 ),
+    ] );
+
+    $connection = makeManager()->handleCallback( 'code-personal', 'state-personal' );
+
+    expect( $connection->microsoft_user_id )->toBe( 'personal-sub-123' );
+    expect( $connection->email )->toBe( 'personal@outlook.com' );
+} );

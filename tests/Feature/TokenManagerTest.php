@@ -262,3 +262,109 @@ it( 'uses the configured tenant when hitting the token endpoint', function (): v
         return 'https://login.microsoftonline.com/contoso.onmicrosoft.com/oauth2/v2.0/token' === $request->url();
     } );
 } );
+
+it( 'falls back to the common tenant when the configured tenant is null or empty', function (): void {
+    // If an operator clears the tenant (or the config driver returns null),
+    // we should still hit a real Microsoft endpoint via /common rather than
+    // constructing a malformed URL with an empty path segment.
+    config( [ 'microsoft-oauth.tenant' => null ] );
+
+    $connection = makeConnection( [
+        'expires_at' => Carbon::now()->subMinute(),
+    ] );
+
+    Http::fake( [
+        'https://login.microsoftonline.com/common/oauth2/v2.0/token' => Http::response( [
+            'access_token' => 'access-2',
+            'token_type'   => 'Bearer',
+            'expires_in'   => 3600,
+        ], 200 ),
+    ] );
+
+    makeTokenManager()->refresh( $connection );
+
+    Http::assertSent( function ( $request ): bool {
+        return 'https://login.microsoftonline.com/common/oauth2/v2.0/token' === $request->url();
+    } );
+} );
+
+it( 'throws before hitting the network when client_id is missing at refresh time', function (): void {
+    // The connection was created when credentials were present, but the
+    // configuration driver has since gone empty (rotated, cleared, etc.).
+    // We should fail loudly instead of sending a bad request to Microsoft.
+    $connection = makeConnection( [
+        'expires_at' => Carbon::now()->subMinute(),
+    ] );
+
+    config( [ 'microsoft-oauth.client_id' => null ] );
+
+    Http::fake();
+
+    try {
+        makeTokenManager()->refresh( $connection );
+        $this->fail( 'Expected TokenRefreshException.' );
+    } catch ( TokenRefreshException $e ) {
+        expect( $e->getMessage() )->toContain( 'client_id is missing' );
+    }
+
+    Http::assertNothingSent();
+
+    // The connection is left intact — this is a config outage, not a
+    // revoked grant, so we don't want to flip it to disconnected and
+    // force the user to reconnect.
+    $connection->refresh();
+    expect( $connection->isConnected() )->toBeTrue();
+    expect( $connection->refresh_token )->toBe( 'refresh-1' );
+} );
+
+it( 'throws when the refresh response is a 2xx with an invalid payload', function (): void {
+    $connection = makeConnection( [
+        'expires_at' => Carbon::now()->subMinute(),
+    ] );
+
+    // Microsoft returns 200 but the body is missing access_token entirely.
+    // Without this guard we would overwrite the stored token with an empty
+    // string and every subsequent Graph call would silently 401.
+    Http::fake( [
+        'https://login.microsoftonline.com/common/oauth2/v2.0/token' => Http::response( [
+            'token_type' => 'Bearer',
+            'expires_in' => 3600,
+        ], 200 ),
+    ] );
+
+    try {
+        makeTokenManager()->refresh( $connection );
+        $this->fail( 'Expected TokenRefreshException.' );
+    } catch ( TokenRefreshException $e ) {
+        expect( $e->getMessage() )->toContain( 'invalid payload' );
+    }
+
+    $connection->refresh();
+    expect( $connection->access_token )->toBe( 'access-1' );
+    expect( $connection->refresh_token )->toBe( 'refresh-1' );
+} );
+
+it( 'omits the scope param from the refresh body when the connection has no granted scopes', function (): void {
+    // A connection whose scopes column is empty (legacy row, or Microsoft
+    // returned no scope on the last exchange) must not send `scope=` — an
+    // empty scope param would ask Microsoft to reissue a token with zero
+    // scopes and downgrade the grant.
+    $connection = makeConnection( [
+        'scopes'     => [],
+        'expires_at' => Carbon::now()->subMinute(),
+    ] );
+
+    Http::fake( [
+        'https://login.microsoftonline.com/common/oauth2/v2.0/token' => Http::response( [
+            'access_token' => 'access-2',
+            'token_type'   => 'Bearer',
+            'expires_in'   => 3600,
+        ], 200 ),
+    ] );
+
+    makeTokenManager()->refresh( $connection );
+
+    Http::assertSent( function ( $request ): bool {
+        return ! array_key_exists( 'scope', $request->data() );
+    } );
+} );
