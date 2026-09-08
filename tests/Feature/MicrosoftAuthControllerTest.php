@@ -143,16 +143,22 @@ it( 'completes the callback, exchanges the code, and redirects on success', func
 it( 'redirects an unauthenticated user away from reauthorize', function (): void {
     $response = $this->get( '/auth/microsoft/reauthorize' );
 
+    // The `auth` middleware redirects to `/login` (or, under testbench with
+    // no `login` route registered, throws — which surfaces as a 500). Any of
+    // these three shapes means the endpoint is closed to guests; matches
+    // the sibling assertion for `connect`.
     expect( $response->getStatusCode() )->toBeIn( [ 302, 401, 500 ] );
 } );
 
-it( 'reauthorize redirects to the post-connect target when the user has no existing connection', function (): void {
+it( 'reauthorize hands the user off to the full connect flow when no connection exists', function (): void {
     $response = $this
         ->actingAs( actingUser( 55 ) )
         ->get( '/auth/microsoft/reauthorize' );
 
-    $response->assertRedirect( '/after-connect' );
-    $response->assertSessionHas( 'microsoft.status', 'already-authorized' );
+    // Without an existing connection, "incremental" consent is a lie — the
+    // user has nothing to build on and needs a real authorization prompt.
+    $response->assertRedirect( route( 'microsoft.auth.connect' ) );
+    $response->assertSessionMissing( 'microsoft.status' );
 } );
 
 it( 'reauthorize redirects to the post-connect target when every required scope is already granted', function (): void {

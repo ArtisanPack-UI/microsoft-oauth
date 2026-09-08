@@ -14,6 +14,7 @@ declare( strict_types=1 );
 namespace ArtisanPackUI\MicrosoftOAuth\Http\Controllers;
 
 use ArtisanPackUI\MicrosoftOAuth\Exceptions\OAuthException;
+use ArtisanPackUI\MicrosoftOAuth\OAuth\IncrementalConsentResult;
 use ArtisanPackUI\MicrosoftOAuth\OAuth\OAuthManager;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -75,19 +76,23 @@ class MicrosoftAuthController extends Controller
         }
 
         try {
-            $url = $this->oauth->incrementalAuthorizationUrl( $user->getAuthIdentifier() );
+            $result = $this->oauth->incrementalAuthorizationUrl( $user->getAuthIdentifier() );
         } catch ( OAuthException $e ) {
             return $this->redirectAfterError()->with( 'microsoft.error', $e->getMessage() );
         }
 
-        if ( null === $url ) {
-            // No existing connection or nothing missing — signal to the app
-            // via a flash so it can decide whether to route the user through
-            // the fresh connect flow.
+        if ( IncrementalConsentResult::NoConnection === $result ) {
+            // No account has ever been connected — hand off to the full
+            // connect flow so the user gets a real authorization prompt
+            // instead of a misleading "already authorized" flash.
+            return redirect()->route( 'microsoft.auth.connect' );
+        }
+
+        if ( IncrementalConsentResult::AlreadyAuthorized === $result ) {
             return $this->redirectAfterConnect()->with( 'microsoft.status', 'already-authorized' );
         }
 
-        return redirect()->away( $url );
+        return redirect()->away( $result );
     }
 
     /**

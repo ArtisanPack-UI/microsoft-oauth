@@ -82,28 +82,29 @@ class OAuthManager
      * has a {@see MicrosoftConnection} but is missing scopes required by
      * newly-registered dependent services.
      *
-     * Returns `null` when there is nothing to consent to — either the user
-     * has no existing connection (caller should send them through the full
-     * flow) or every registered scope has already been granted. When a URL
-     * is returned, a session flag is set so {@see handleCallback()}
-     * preserves previously-granted scopes on top of what Microsoft returns
-     * in the token response.
+     * Returns an {@see IncrementalConsentResult} case instead of a URL when
+     * there is nothing to send the user to — `NoConnection` when the user
+     * has never connected (caller should route them through the full connect
+     * flow) or `AlreadyAuthorized` when every registered scope is already
+     * granted. When a URL is returned, a session flag is set so
+     * {@see handleCallback()} preserves previously-granted scopes on top of
+     * what Microsoft returns in the token response.
      *
      * @since 1.0.0
      */
-    public function incrementalAuthorizationUrl( int|string $userId ): ?string
+    public function incrementalAuthorizationUrl( int|string $userId ): string|IncrementalConsentResult
     {
         $connection = MicrosoftConnection::where( 'user_id', $userId )->first();
 
         if ( null === $connection ) {
-            return null;
+            return IncrementalConsentResult::NoConnection;
         }
 
         $granted = $connection->grantedScopes();
         $missing = $this->scopes->missing( $granted );
 
         if ( [] === $missing ) {
-            return null;
+            return IncrementalConsentResult::AlreadyAuthorized;
         }
 
         // Request the full union so Microsoft has the complete picture and
@@ -373,30 +374,30 @@ class OAuthManager
      */
     protected function mergeScopes( array $additional ): array
     {
-        $merged = array_merge( $this->scopes->all(), array_map( 'strval', $additional ) );
-        $merged = array_map( 'trim', $merged );
-        $merged = array_filter( $merged, static fn ( string $s ): bool => '' !== $s );
-
-        return array_values( array_unique( $merged ) );
+        return $this->unionScopes( $this->scopes->all(), $additional );
     }
 
     /**
-     * Deduplicated union of two scope lists, preserving order (existing
-     * scopes first, then newly-added ones).
+     * Deduplicated union of two or more scope lists, preserving order (each
+     * list's scopes appear before the next list's, whitespace-only entries
+     * are dropped).
      *
      * @since 1.0.0
      *
-     * @param  array<int, string>  $existing
-     * @param  array<int, string>  $incoming
+     * @param  array<int, string>  ...$lists
      *
      * @return list<string>
      */
-    protected function unionScopes( array $existing, array $incoming ): array
+    protected function unionScopes( array ...$lists ): array
     {
-        $merged = array_merge(
-            array_map( 'strval', $existing ),
-            array_map( 'strval', $incoming ),
-        );
+        $merged = [];
+
+        foreach ( $lists as $list ) {
+            foreach ( $list as $scope ) {
+                $merged[] = (string) $scope;
+            }
+        }
+
         $merged = array_map( 'trim', $merged );
         $merged = array_filter( $merged, static fn ( string $s ): bool => '' !== $s );
 

@@ -5,6 +5,7 @@ declare( strict_types=1 );
 use ArtisanPackUI\Hooks\Facades\Filter;
 use ArtisanPackUI\MicrosoftOAuth\Exceptions\OAuthException;
 use ArtisanPackUI\MicrosoftOAuth\Models\MicrosoftConnection;
+use ArtisanPackUI\MicrosoftOAuth\OAuth\IncrementalConsentResult;
 use ArtisanPackUI\MicrosoftOAuth\OAuth\OAuthManager;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Crypt;
@@ -348,12 +349,13 @@ it( 'surfaces Microsoft error_description when the exchange fails', function ():
     }
 } );
 
-it( 'returns null from incrementalAuthorizationUrl when the user has no existing connection', function (): void {
-    expect( makeManager()->incrementalAuthorizationUrl( 999 ) )->toBeNull();
+it( 'returns NoConnection from incrementalAuthorizationUrl when the user has no existing connection', function (): void {
+    expect( makeManager()->incrementalAuthorizationUrl( 999 ) )
+        ->toBe( IncrementalConsentResult::NoConnection );
     expect( session( 'microsoft_oauth.incremental' ) )->toBeNull();
 } );
 
-it( 'returns null from incrementalAuthorizationUrl when every required scope is already granted', function (): void {
+it( 'returns AlreadyAuthorized from incrementalAuthorizationUrl when every required scope is already granted', function (): void {
     Filter::add( 'ap.microsoft.oauth.scopes', fn ( array $s ): array => array_merge( $s, [
         'https://graph.microsoft.com/User.Read',
     ] ) );
@@ -374,7 +376,8 @@ it( 'returns null from incrementalAuthorizationUrl when every required scope is 
         'status'        => MicrosoftConnection::STATUS_CONNECTED,
     ] );
 
-    expect( makeManager()->incrementalAuthorizationUrl( 10 ) )->toBeNull();
+    expect( makeManager()->incrementalAuthorizationUrl( 10 ) )
+        ->toBe( IncrementalConsentResult::AlreadyAuthorized );
     expect( session( 'microsoft_oauth.incremental' ) )->toBeNull();
 } );
 
@@ -396,7 +399,7 @@ it( 'builds an incremental authorization URL with prompt=consent when new scopes
 
     $url = makeManager()->incrementalAuthorizationUrl( 20 );
 
-    expect( $url )->not->toBeNull();
+    expect( $url )->toBeString();
     expect( $url )->toStartWith( 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?' );
 
     $query = [];
@@ -462,6 +465,65 @@ it( 'unions returned scopes with previously-granted ones after an incremental re
 
     // Incremental flag is single-use; it must have been consumed.
     expect( session( 'microsoft_oauth.incremental' ) )->toBeNull();
+} );
+
+it( 'preserves the scope union on an incremental callback that hits the duplicate-key retry path', function (): void {
+    // Simulate a concurrent incremental callback for the same user: our
+    // firstOrNew sees no row for the model we hydrate, but between that
+    // check and save() a racing callback inserts the row first. The retry
+    // branch must re-apply tokens WITH the incremental flag so the union
+    // (not replace) semantics survive.
+    $raceFired = false;
+    MicrosoftConnection::creating( function ( MicrosoftConnection $model ) use ( &$raceFired ): void {
+        if ( $raceFired || 50 !== $model->user_id ) {
+            return;
+        }
+
+        $raceFired = true;
+
+        // The winning insert already recorded a broader scope set that
+        // ours (a raw exchange returning only the newly-consented scope)
+        // must union with, not overwrite.
+        DB::table( 'microsoft_connections' )->insert( [
+            'user_id'       => 50,
+            'access_token'  => encrypt( 'race-loser-access' ),
+            'refresh_token' => encrypt( 'race-loser-refresh' ),
+            'token_type'    => 'Bearer',
+            'scopes'        => json_encode( [ 'openid', 'profile', 'email', 'offline_access' ] ),
+            'expires_at'    => Carbon::now()->addHour()->toDateTimeString(),
+            'status'        => MicrosoftConnection::STATUS_CONNECTED,
+            'created_at'    => Carbon::now(),
+            'updated_at'    => Carbon::now(),
+        ] );
+    } );
+
+    session( [
+        'microsoft_oauth.state'       => 'state-race-inc',
+        'microsoft_oauth.verifier'    => 'verifier-race-inc',
+        'microsoft_oauth.user_id'     => 50,
+        'microsoft_oauth.incremental' => true,
+    ] );
+
+    Http::fake( [
+        'https://login.microsoftonline.com/common/oauth2/v2.0/token' => Http::response( [
+            'access_token'  => 'race-winner-access',
+            'refresh_token' => 'race-winner-refresh',
+            'token_type'    => 'Bearer',
+            'expires_in'    => 3600,
+            'scope'         => 'https://graph.microsoft.com/User.Read',
+        ], 200 ),
+    ] );
+
+    $connection = makeManager()->handleCallback( 'code-race-inc', 'state-race-inc' );
+
+    MicrosoftConnection::flushEventListeners();
+
+    expect( $raceFired )->toBeTrue();
+    expect( MicrosoftConnection::count() )->toBe( 1 );
+    expect( $connection->access_token )->toBe( 'race-winner-access' );
+    expect( $connection->grantedScopes() )->toContain( 'openid' );
+    expect( $connection->grantedScopes() )->toContain( 'offline_access' );
+    expect( $connection->grantedScopes() )->toContain( 'https://graph.microsoft.com/User.Read' );
 } );
 
 it( 'replaces (does not union) scopes on a non-incremental callback', function (): void {
