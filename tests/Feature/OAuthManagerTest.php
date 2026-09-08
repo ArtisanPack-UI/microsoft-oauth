@@ -526,6 +526,207 @@ it( 'preserves the scope union on an incremental callback that hits the duplicat
     expect( $connection->grantedScopes() )->toContain( 'https://graph.microsoft.com/User.Read' );
 } );
 
+it( 'refuses to build endpoints when the configured tenant is invalid', function (): void {
+    config( [ 'microsoft-oauth.tenant' => 'not-a-valid-authority' ] );
+
+    makeManager()->authorizationUrl( 1 );
+} )->throws( OAuthException::class, 'Invalid Microsoft OAuth tenant' );
+
+it( 'persists the tid claim from the id_token on the connection', function (): void {
+    session( [
+        'microsoft_oauth.state'    => 'state-tid',
+        'microsoft_oauth.verifier' => 'verifier-tid',
+        'microsoft_oauth.user_id'  => 101,
+    ] );
+
+    $idToken = makeIdToken( [
+        'oid'   => 'ms-user-tid',
+        'email' => 'user@contoso.com',
+        'tid'   => '11111111-2222-3333-4444-555555555555',
+    ] );
+
+    Http::fake( [
+        'https://login.microsoftonline.com/common/oauth2/v2.0/token' => Http::response( [
+            'access_token' => 'access-token-tid',
+            'token_type'   => 'Bearer',
+            'expires_in'   => 3600,
+            'scope'        => 'openid profile email offline_access',
+            'id_token'     => $idToken,
+        ], 200 ),
+    ] );
+
+    $connection = makeManager()->handleCallback( 'code-tid', 'state-tid' );
+
+    expect( $connection->tid )->toBe( '11111111-2222-3333-4444-555555555555' );
+} );
+
+it( 'rejects a personal Microsoft account on an organizations-only tenant', function (): void {
+    config( [ 'microsoft-oauth.tenant' => 'organizations' ] );
+
+    session( [
+        'microsoft_oauth.state'    => 'state-org',
+        'microsoft_oauth.verifier' => 'verifier-org',
+        'microsoft_oauth.user_id'  => 200,
+    ] );
+
+    $idToken = makeIdToken( [
+        'oid' => 'ms-user-personal',
+        'tid' => ArtisanPackUI\MicrosoftOAuth\OAuth\TenantAuthority::MSA_TENANT_ID,
+    ] );
+
+    Http::fake( [
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token' => Http::response( [
+            'access_token' => 'access-token-personal',
+            'token_type'   => 'Bearer',
+            'expires_in'   => 3600,
+            'scope'        => 'openid profile email offline_access',
+            'id_token'     => $idToken,
+        ], 200 ),
+    ] );
+
+    try {
+        makeManager()->handleCallback( 'code-org', 'state-org' );
+        $this->fail( 'Expected OAuthException.' );
+    } catch ( OAuthException $e ) {
+        expect( $e->getMessage() )->toContain( 'personal account' );
+    }
+
+    // The rejected exchange must not leave a connection row behind.
+    expect( MicrosoftConnection::where( 'user_id', 200 )->exists() )->toBeFalse();
+} );
+
+it( 'rejects a work / school account on a consumers-only tenant', function (): void {
+    config( [ 'microsoft-oauth.tenant' => 'consumers' ] );
+
+    session( [
+        'microsoft_oauth.state'    => 'state-consumer',
+        'microsoft_oauth.verifier' => 'verifier-consumer',
+        'microsoft_oauth.user_id'  => 201,
+    ] );
+
+    $idToken = makeIdToken( [
+        'oid' => 'ms-user-work',
+        'tid' => '11111111-2222-3333-4444-555555555555',
+    ] );
+
+    Http::fake( [
+        'https://login.microsoftonline.com/consumers/oauth2/v2.0/token' => Http::response( [
+            'access_token' => 'access-token-work',
+            'token_type'   => 'Bearer',
+            'expires_in'   => 3600,
+            'scope'        => 'openid profile email offline_access',
+            'id_token'     => $idToken,
+        ], 200 ),
+    ] );
+
+    try {
+        makeManager()->handleCallback( 'code-consumer', 'state-consumer' );
+        $this->fail( 'Expected OAuthException.' );
+    } catch ( OAuthException $e ) {
+        expect( $e->getMessage() )->toContain( 'work / school account' );
+    }
+
+    expect( MicrosoftConnection::where( 'user_id', 201 )->exists() )->toBeFalse();
+} );
+
+it( 'rejects a token whose tid does not match the configured single-tenant GUID', function (): void {
+    $expected = '11111111-2222-3333-4444-555555555555';
+    $actual   = '99999999-8888-7777-6666-555555555555';
+
+    config( [ 'microsoft-oauth.tenant' => $expected ] );
+
+    session( [
+        'microsoft_oauth.state'    => 'state-single',
+        'microsoft_oauth.verifier' => 'verifier-single',
+        'microsoft_oauth.user_id'  => 202,
+    ] );
+
+    $idToken = makeIdToken( [
+        'oid' => 'ms-user-wrong-tenant',
+        'tid' => $actual,
+    ] );
+
+    Http::fake( [
+        "https://login.microsoftonline.com/{$expected}/oauth2/v2.0/token" => Http::response( [
+            'access_token' => 'access-token-wrong',
+            'token_type'   => 'Bearer',
+            'expires_in'   => 3600,
+            'scope'        => 'openid profile email offline_access',
+            'id_token'     => $idToken,
+        ], 200 ),
+    ] );
+
+    try {
+        makeManager()->handleCallback( 'code-single', 'state-single' );
+        $this->fail( 'Expected OAuthException.' );
+    } catch ( OAuthException $e ) {
+        expect( $e->getMessage() )->toContain( 'registered for tenant' );
+    }
+
+    expect( MicrosoftConnection::where( 'user_id', 202 )->exists() )->toBeFalse();
+} );
+
+it( 'accepts a token whose tid matches the configured single-tenant GUID', function (): void {
+    $guid = '11111111-2222-3333-4444-555555555555';
+
+    config( [ 'microsoft-oauth.tenant' => $guid ] );
+
+    session( [
+        'microsoft_oauth.state'    => 'state-single-ok',
+        'microsoft_oauth.verifier' => 'verifier-single-ok',
+        'microsoft_oauth.user_id'  => 203,
+    ] );
+
+    $idToken = makeIdToken( [
+        'oid' => 'ms-user-right-tenant',
+        'tid' => $guid,
+    ] );
+
+    Http::fake( [
+        "https://login.microsoftonline.com/{$guid}/oauth2/v2.0/token" => Http::response( [
+            'access_token' => 'access-token-right',
+            'token_type'   => 'Bearer',
+            'expires_in'   => 3600,
+            'scope'        => 'openid profile email offline_access',
+            'id_token'     => $idToken,
+        ], 200 ),
+    ] );
+
+    $connection = makeManager()->handleCallback( 'code-single-ok', 'state-single-ok' );
+
+    expect( $connection->tid )->toBe( $guid );
+} );
+
+it( 'requires a tid on non-common authorities', function (): void {
+    config( [ 'microsoft-oauth.tenant' => 'organizations' ] );
+
+    session( [
+        'microsoft_oauth.state'    => 'state-notid',
+        'microsoft_oauth.verifier' => 'verifier-notid',
+        'microsoft_oauth.user_id'  => 204,
+    ] );
+
+    // id_token deliberately omits tid.
+    $idToken = makeIdToken( [ 'oid' => 'ms-user-no-tid' ] );
+
+    Http::fake( [
+        'https://login.microsoftonline.com/organizations/oauth2/v2.0/token' => Http::response( [
+            'access_token' => 'a',
+            'token_type'   => 'Bearer',
+            'expires_in'   => 3600,
+            'scope'        => 'openid offline_access',
+            'id_token'     => $idToken,
+        ], 200 ),
+    ] );
+
+    try {
+        makeManager()->handleCallback( 'code-notid', 'state-notid' );
+        $this->fail( 'Expected OAuthException.' );
+    } catch ( OAuthException $e ) {
+        expect( $e->getMessage() )->toContain( 'missing the tid claim' );
+    }
+} );
+
 it( 'replaces (does not union) scopes on a non-incremental callback', function (): void {
     MicrosoftConnection::create( [
         'user_id'       => 40,

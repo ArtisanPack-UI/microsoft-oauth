@@ -15,6 +15,13 @@ return new class extends Migration
             $table->unsignedBigInteger( 'user_id' );
             $table->string( 'microsoft_user_id' )->nullable();
             $table->string( 'email' )->nullable();
+            // Tenant id (`tid` claim) of the Microsoft account behind this
+            // connection. On multi-tenant authorities (`common` /
+            // `organizations` / `consumers`) this captures which specific
+            // tenant issued the token so downstream integrations can route
+            // per-tenant. On single-tenant configs it matches the
+            // configured tenant.
+            $table->string( 'tid' )->nullable();
             $table->longText( 'access_token' )->nullable();
             $table->longText( 'refresh_token' )->nullable();
             $table->string( 'token_type' )->default( 'Bearer' );

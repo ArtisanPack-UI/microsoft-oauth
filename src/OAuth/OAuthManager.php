@@ -202,12 +202,22 @@ class OAuthManager
             ? array_values( array_filter( explode( ' ', (string) $payload[ 'scope' ] ) ) )
             : $this->mergeScopes( [] );
 
-        [ $microsoftUserId, $email ] = $this->extractIdentity( $payload[ 'id_token' ] ?? null );
+        [ $microsoftUserId, $email, $tid ] = $this->extractIdentity( $payload[ 'id_token' ] ?? null );
+
+        // The configured authority (`common` / `organizations` / `consumers`
+        // / GUID / verified domain) determines which tid values are allowed
+        // in the returned id_token. A mismatch is a real-world security
+        // concern on multi-tenant apps — a `consumers`-only registration
+        // must reject work accounts, and vice versa — so we fail the
+        // exchange loudly rather than silently persisting a connection the
+        // downstream integration can't legitimately use.
+        $this->authority()->assertTidMatches( $tid );
 
         return $this->persistConnection(
             $userId,
             $microsoftUserId,
             $email,
+            $tid,
             $payload,
             $scopes,
             $expiresAt,
@@ -268,6 +278,7 @@ class OAuthManager
         int|string $userId,
         ?string $microsoftUserId,
         ?string $email,
+        ?string $tid,
         array $payload,
         array $scopes,
         ?Carbon $expiresAt,
@@ -275,7 +286,7 @@ class OAuthManager
     ): MicrosoftConnection {
         $connection = MicrosoftConnection::firstOrNew( [ 'user_id' => $userId ] );
 
-        $this->applyTokens( $connection, $microsoftUserId, $email, $payload, $scopes, $expiresAt, $incremental );
+        $this->applyTokens( $connection, $microsoftUserId, $email, $tid, $payload, $scopes, $expiresAt, $incremental );
 
         try {
             $connection->save();
@@ -285,7 +296,7 @@ class OAuthManager
             }
 
             $connection = MicrosoftConnection::where( 'user_id', $userId )->firstOrFail();
-            $this->applyTokens( $connection, $microsoftUserId, $email, $payload, $scopes, $expiresAt, $incremental );
+            $this->applyTokens( $connection, $microsoftUserId, $email, $tid, $payload, $scopes, $expiresAt, $incremental );
             $connection->save();
         }
 
@@ -302,6 +313,7 @@ class OAuthManager
         MicrosoftConnection $connection,
         ?string $microsoftUserId,
         ?string $email,
+        ?string $tid,
         array $payload,
         array $scopes,
         ?Carbon $expiresAt,
@@ -318,6 +330,7 @@ class OAuthManager
 
         $connection->microsoft_user_id = $microsoftUserId ?? $connection->microsoft_user_id;
         $connection->email             = $email ?? $connection->email;
+        $connection->tid               = $tid ?? $connection->tid;
         $connection->access_token      = (string) $payload[ 'access_token' ];
         $connection->token_type        = (string) ( $payload[ 'token_type' ] ?? 'Bearer' );
         $connection->scopes            = $scopes;
@@ -412,27 +425,27 @@ class OAuthManager
      *
      * @since 1.0.0
      *
-     * @return array{0: ?string, 1: ?string} [microsoft_user_id, email]
+     * @return array{0: ?string, 1: ?string, 2: ?string} [microsoft_user_id, email, tid]
      */
     protected function extractIdentity( ?string $idToken ): array
     {
         if ( empty( $idToken ) ) {
-            return [ null, null ];
+            return [ null, null, null ];
         }
 
         $parts = explode( '.', $idToken );
         if ( 3 !== count( $parts ) ) {
-            return [ null, null ];
+            return [ null, null, null ];
         }
 
         $payload = base64_decode( strtr( $parts[ 1 ], '-_', '+/' ), true );
         if ( false === $payload ) {
-            return [ null, null ];
+            return [ null, null, null ];
         }
 
         $claims = json_decode( $payload, true );
         if ( ! is_array( $claims ) ) {
-            return [ null, null ];
+            return [ null, null, null ];
         }
 
         // `oid` is stable across tenants for a work/school account; `sub` is
@@ -452,7 +465,12 @@ class OAuthManager
             $email = (string) $claims[ 'preferred_username' ];
         }
 
-        return [ $userId, $email ];
+        $tid = null;
+        if ( isset( $claims[ 'tid' ] ) ) {
+            $tid = (string) $claims[ 'tid' ];
+        }
+
+        return [ $userId, $email, $tid ];
     }
 
     protected function authorizeEndpoint(): string
@@ -467,10 +485,25 @@ class OAuthManager
 
     protected function buildEndpoint( string $type ): string
     {
-        $tenant = (string) ( $this->credentials->getTenant() ?? 'common' );
-        $tenant = '' === $tenant ? 'common' : $tenant;
+        return "https://login.microsoftonline.com/{$this->authority()->value()}/oauth2/v2.0/{$type}";
+    }
 
-        return "https://login.microsoftonline.com/{$tenant}/oauth2/v2.0/{$type}";
+    /**
+     * Resolve the configured tenant into a {@see TenantAuthority}.
+     *
+     * Called on every endpoint build and every tid check so an operator
+     * flipping `microsoft-oauth.tenant` (via the database or CMS driver)
+     * mid-request is picked up on the next call — matching the scoped
+     * driver bindings in the service provider.
+     *
+     * @since 1.0.0
+     *
+     * @throws OAuthException When the configured tenant value is not a
+     *                        recognized authority form.
+     */
+    protected function authority(): TenantAuthority
+    {
+        return TenantAuthority::fromConfig( $this->credentials->getTenant() );
     }
 
     protected function requireClientId(): string
