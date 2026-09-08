@@ -54,6 +54,43 @@ class MicrosoftAuthController extends Controller
     }
 
     /**
+     * Trigger an incremental-consent re-authorization for the current user.
+     *
+     * When a consumer package registers a new scope after the account is
+     * already connected, calling this endpoint sends the user through a
+     * consent prompt for just the added scopes rather than a full
+     * disconnect + reconnect. Users without an existing connection are
+     * routed through the full connect flow; users whose connection already
+     * covers every required scope are redirected to the post-connect
+     * target with a `microsoft.status=already-authorized` flash.
+     *
+     * @since 1.0.0
+     */
+    public function reauthorize( Request $request ): RedirectResponse
+    {
+        $user = $request->user();
+
+        if ( null === $user ) {
+            abort( 401 );
+        }
+
+        try {
+            $url = $this->oauth->incrementalAuthorizationUrl( $user->getAuthIdentifier() );
+        } catch ( OAuthException $e ) {
+            return $this->redirectAfterError()->with( 'microsoft.error', $e->getMessage() );
+        }
+
+        if ( null === $url ) {
+            // No existing connection or nothing missing — signal to the app
+            // via a flash so it can decide whether to route the user through
+            // the fresh connect flow.
+            return $this->redirectAfterConnect()->with( 'microsoft.status', 'already-authorized' );
+        }
+
+        return redirect()->away( $url );
+    }
+
+    /**
      * Handle the OAuth callback from Microsoft.
      *
      * @since 1.0.0

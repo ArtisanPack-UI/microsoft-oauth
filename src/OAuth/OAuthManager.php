@@ -41,11 +41,13 @@ use Illuminate\Support\Str;
  */
 class OAuthManager
 {
-    protected const SESSION_STATE    = 'microsoft_oauth.state';
+    protected const SESSION_STATE       = 'microsoft_oauth.state';
 
-    protected const SESSION_VERIFIER = 'microsoft_oauth.verifier';
+    protected const SESSION_VERIFIER    = 'microsoft_oauth.verifier';
 
-    protected const SESSION_USER_ID  = 'microsoft_oauth.user_id';
+    protected const SESSION_USER_ID     = 'microsoft_oauth.user_id';
+
+    protected const SESSION_INCREMENTAL = 'microsoft_oauth.incremental';
 
     public function __construct(
         protected ConfigurationRepository $credentials,
@@ -66,32 +68,59 @@ class OAuthManager
      */
     public function authorizationUrl( int|string $userId, array $additionalScopes = [] ): string
     {
-        $clientId = $this->requireClientId();
-        $redirect = $this->requireConfig( 'microsoft-oauth.redirect_uri' );
+        $this->session->forget( self::SESSION_INCREMENTAL );
 
-        $state     = Str::random( 40 );
-        $verifier  = $this->generateVerifier();
-        $challenge = $this->generateChallenge( $verifier );
+        return $this->buildAuthorizationUrl(
+            $userId,
+            $this->mergeScopes( $additionalScopes ),
+            (string) $this->config->get( 'microsoft-oauth.prompt', 'select_account' ),
+        );
+    }
 
-        $this->session->put( self::SESSION_STATE, $state );
-        $this->session->put( self::SESSION_VERIFIER, $verifier );
-        $this->session->put( self::SESSION_USER_ID, $userId );
+    /**
+     * Build an incremental-consent authorization URL for a user who already
+     * has a {@see MicrosoftConnection} but is missing scopes required by
+     * newly-registered dependent services.
+     *
+     * Returns `null` when there is nothing to consent to — either the user
+     * has no existing connection (caller should send them through the full
+     * flow) or every registered scope has already been granted. When a URL
+     * is returned, a session flag is set so {@see handleCallback()}
+     * preserves previously-granted scopes on top of what Microsoft returns
+     * in the token response.
+     *
+     * @since 1.0.0
+     */
+    public function incrementalAuthorizationUrl( int|string $userId ): ?string
+    {
+        $connection = MicrosoftConnection::where( 'user_id', $userId )->first();
 
-        $scopes = $this->mergeScopes( $additionalScopes );
+        if ( null === $connection ) {
+            return null;
+        }
 
-        $params = [
-            'client_id'             => $clientId,
-            'response_type'         => 'code',
-            'redirect_uri'          => $redirect,
-            'response_mode'         => 'query',
-            'scope'                 => implode( ' ', $scopes ),
-            'state'                 => $state,
-            'code_challenge'        => $challenge,
-            'code_challenge_method' => 'S256',
-            'prompt'                => (string) $this->config->get( 'microsoft-oauth.prompt', 'select_account' ),
-        ];
+        $granted = $connection->grantedScopes();
+        $missing = $this->scopes->missing( $granted );
 
-        return $this->authorizeEndpoint() . '?' . http_build_query( $params );
+        if ( [] === $missing ) {
+            return null;
+        }
+
+        // Request the full union so Microsoft has the complete picture and
+        // returns a token valid for every scope the app needs. The consent
+        // screen still only asks for the delta — Microsoft skips prompts for
+        // scopes the user has already granted. `prompt=consent` forces the
+        // consent screen so the user has an opportunity to approve the added
+        // scopes even if their tenant would otherwise auto-consent.
+        $url = $this->buildAuthorizationUrl(
+            $userId,
+            $this->mergeScopes( [] ),
+            'consent',
+        );
+
+        $this->session->put( self::SESSION_INCREMENTAL, true );
+
+        return $url;
     }
 
     /**
@@ -111,6 +140,7 @@ class OAuthManager
         $storedState = $this->session->pull( self::SESSION_STATE );
         $verifier    = $this->session->pull( self::SESSION_VERIFIER );
         $userId      = $this->session->pull( self::SESSION_USER_ID );
+        $incremental = (bool) $this->session->pull( self::SESSION_INCREMENTAL, false );
 
         if ( empty( $storedState ) || ! hash_equals( (string) $storedState, $returnedState ) ) {
             throw new OAuthException( __( 'OAuth state mismatch; possible CSRF attempt.' ) );
@@ -180,7 +210,44 @@ class OAuthManager
             $payload,
             $scopes,
             $expiresAt,
+            $incremental,
         );
+    }
+
+    /**
+     * Assemble a Microsoft authorization URL and stash the accompanying
+     * PKCE / state values in the session.
+     *
+     * @since 1.0.0
+     *
+     * @param  list<string>  $scopes  Deduplicated list of scopes to request.
+     */
+    protected function buildAuthorizationUrl( int|string $userId, array $scopes, string $prompt ): string
+    {
+        $clientId = $this->requireClientId();
+        $redirect = $this->requireConfig( 'microsoft-oauth.redirect_uri' );
+
+        $state     = Str::random( 40 );
+        $verifier  = $this->generateVerifier();
+        $challenge = $this->generateChallenge( $verifier );
+
+        $this->session->put( self::SESSION_STATE, $state );
+        $this->session->put( self::SESSION_VERIFIER, $verifier );
+        $this->session->put( self::SESSION_USER_ID, $userId );
+
+        $params = [
+            'client_id'             => $clientId,
+            'response_type'         => 'code',
+            'redirect_uri'          => $redirect,
+            'response_mode'         => 'query',
+            'scope'                 => implode( ' ', $scopes ),
+            'state'                 => $state,
+            'code_challenge'        => $challenge,
+            'code_challenge_method' => 'S256',
+            'prompt'                => $prompt,
+        ];
+
+        return $this->authorizeEndpoint() . '?' . http_build_query( $params );
     }
 
     /**
@@ -203,10 +270,11 @@ class OAuthManager
         array $payload,
         array $scopes,
         ?Carbon $expiresAt,
+        bool $incremental = false,
     ): MicrosoftConnection {
         $connection = MicrosoftConnection::firstOrNew( [ 'user_id' => $userId ] );
 
-        $this->applyTokens( $connection, $microsoftUserId, $email, $payload, $scopes, $expiresAt );
+        $this->applyTokens( $connection, $microsoftUserId, $email, $payload, $scopes, $expiresAt, $incremental );
 
         try {
             $connection->save();
@@ -216,7 +284,7 @@ class OAuthManager
             }
 
             $connection = MicrosoftConnection::where( 'user_id', $userId )->firstOrFail();
-            $this->applyTokens( $connection, $microsoftUserId, $email, $payload, $scopes, $expiresAt );
+            $this->applyTokens( $connection, $microsoftUserId, $email, $payload, $scopes, $expiresAt, $incremental );
             $connection->save();
         }
 
@@ -236,7 +304,17 @@ class OAuthManager
         array $payload,
         array $scopes,
         ?Carbon $expiresAt,
+        bool $incremental = false,
     ): void {
+        // On an incremental-consent re-auth the token response reflects only
+        // the scopes the user granted in *this* exchange, but the user's
+        // consent on the Microsoft side is cumulative. Union with the
+        // previously-recorded scopes so ScopeRegistry::missing() keeps
+        // reporting a correct picture after re-auth.
+        if ( $incremental ) {
+            $scopes = $this->unionScopes( $connection->grantedScopes(), $scopes );
+        }
+
         $connection->microsoft_user_id = $microsoftUserId ?? $connection->microsoft_user_id;
         $connection->email             = $email ?? $connection->email;
         $connection->access_token      = (string) $payload[ 'access_token' ];
@@ -296,6 +374,29 @@ class OAuthManager
     protected function mergeScopes( array $additional ): array
     {
         $merged = array_merge( $this->scopes->all(), array_map( 'strval', $additional ) );
+        $merged = array_map( 'trim', $merged );
+        $merged = array_filter( $merged, static fn ( string $s ): bool => '' !== $s );
+
+        return array_values( array_unique( $merged ) );
+    }
+
+    /**
+     * Deduplicated union of two scope lists, preserving order (existing
+     * scopes first, then newly-added ones).
+     *
+     * @since 1.0.0
+     *
+     * @param  array<int, string>  $existing
+     * @param  array<int, string>  $incoming
+     *
+     * @return list<string>
+     */
+    protected function unionScopes( array $existing, array $incoming ): array
+    {
+        $merged = array_merge(
+            array_map( 'strval', $existing ),
+            array_map( 'strval', $incoming ),
+        );
         $merged = array_map( 'trim', $merged );
         $merged = array_filter( $merged, static fn ( string $s ): bool => '' !== $s );
 

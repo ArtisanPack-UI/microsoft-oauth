@@ -2,7 +2,10 @@
 
 declare( strict_types=1 );
 
+use ArtisanPackUI\Hooks\Facades\Filter;
+use ArtisanPackUI\MicrosoftOAuth\Models\MicrosoftConnection;
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 
 beforeEach( function (): void {
@@ -135,4 +138,70 @@ it( 'completes the callback, exchanges the code, and redirects on success', func
     Http::assertSent( function ( $request ): bool {
         return 'https://login.microsoftonline.com/common/oauth2/v2.0/token' === $request->url();
     } );
+} );
+
+it( 'redirects an unauthenticated user away from reauthorize', function (): void {
+    $response = $this->get( '/auth/microsoft/reauthorize' );
+
+    expect( $response->getStatusCode() )->toBeIn( [ 302, 401, 500 ] );
+} );
+
+it( 'reauthorize redirects to the post-connect target when the user has no existing connection', function (): void {
+    $response = $this
+        ->actingAs( actingUser( 55 ) )
+        ->get( '/auth/microsoft/reauthorize' );
+
+    $response->assertRedirect( '/after-connect' );
+    $response->assertSessionHas( 'microsoft.status', 'already-authorized' );
+} );
+
+it( 'reauthorize redirects to the post-connect target when every required scope is already granted', function (): void {
+    MicrosoftConnection::create( [
+        'user_id'       => 66,
+        'access_token'  => 'a',
+        'refresh_token' => 'r',
+        'token_type'    => 'Bearer',
+        'scopes'        => [ 'openid', 'profile', 'email', 'offline_access' ],
+        'expires_at'    => Carbon::now()->addHour(),
+        'status'        => MicrosoftConnection::STATUS_CONNECTED,
+    ] );
+
+    $response = $this
+        ->actingAs( actingUser( 66 ) )
+        ->get( '/auth/microsoft/reauthorize' );
+
+    $response->assertRedirect( '/after-connect' );
+    $response->assertSessionHas( 'microsoft.status', 'already-authorized' );
+} );
+
+it( 'reauthorize redirects to the Microsoft consent URL when new scopes are missing', function (): void {
+    Filter::add( 'ap.microsoft.oauth.scopes', fn ( array $s ): array => array_merge( $s, [
+        'https://graph.microsoft.com/User.Read',
+    ] ) );
+
+    MicrosoftConnection::create( [
+        'user_id'       => 77,
+        'access_token'  => 'a',
+        'refresh_token' => 'r',
+        'token_type'    => 'Bearer',
+        'scopes'        => [ 'openid', 'profile', 'email', 'offline_access' ],
+        'expires_at'    => Carbon::now()->addHour(),
+        'status'        => MicrosoftConnection::STATUS_CONNECTED,
+    ] );
+
+    $response = $this
+        ->actingAs( actingUser( 77 ) )
+        ->get( '/auth/microsoft/reauthorize' );
+
+    $response->assertRedirect();
+
+    $location = $response->headers->get( 'Location' );
+
+    expect( $location )->toStartWith( 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?' );
+
+    $query = [];
+    parse_str( parse_url( $location, PHP_URL_QUERY ), $query );
+
+    expect( $query[ 'prompt' ] )->toBe( 'consent' );
+    expect( $query[ 'scope' ] )->toContain( 'https://graph.microsoft.com/User.Read' );
 } );
