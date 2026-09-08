@@ -54,11 +54,21 @@ return [
     | Tenant
     |--------------------------------------------------------------------------
     |
-    | Which Microsoft tenant this app authorizes against. Use `common` for
-    | any account (work, school, personal), `organizations` for work/school
-    | only, `consumers` for personal Microsoft accounts only, or a specific
-    | tenant GUID / verified domain for a single-tenant app. Multi-tenant
-    | configuration is elaborated in issue #9.
+    | Which Microsoft tenant this app authorizes against. Accepted values:
+    |
+    | - `common`        : any Microsoft account (work, school, personal).
+    | - `organizations` : work / school accounts only. Personal Microsoft
+    |                     accounts are rejected on callback.
+    | - `consumers`     : personal Microsoft accounts only. Work / school
+    |                     accounts are rejected on callback.
+    | - A tenant GUID   : single-tenant app; tokens whose `tid` does not
+    |                     match this GUID are rejected on callback.
+    | - A verified domain (e.g. `contoso.onmicrosoft.com`, `contoso.com`):
+    |                     single-tenant app; Microsoft resolves the domain
+    |                     to a specific tenant.
+    |
+    | The configured value is validated at OAuth-flow time; misconfigured
+    | tenants throw an OAuthException rather than silently defaulting.
     |
     */
 

@@ -29,6 +29,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property int    $user_id
  * @property string|null $microsoft_user_id
  * @property string|null $email
+ * @property string|null $tid
  * @property string|null $access_token
  * @property string|null $refresh_token
  * @property string $token_type
@@ -49,6 +50,7 @@ class MicrosoftConnection extends Model
         'user_id',
         'microsoft_user_id',
         'email',
+        'tid',
         'access_token',
         'refresh_token',
         'token_type',
