@@ -7,6 +7,7 @@ use ArtisanPackUI\MicrosoftOAuth\Models\MicrosoftConnection;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Route;
 
 beforeEach( function (): void {
     config( [
@@ -178,6 +179,35 @@ it( 'reauthorize redirects to the post-connect target when every required scope 
 
     $response->assertRedirect( '/after-connect' );
     $response->assertSessionHas( 'microsoft.status', 'already-authorized' );
+} );
+
+it( 'resolves the after-connect target as a named route when one is registered', function (): void {
+    // The controller's resolveRedirect accepts either a URL path or a
+    // Laravel route name. Every other test uses a path; this one pins the
+    // named-route branch so an operator can safely point
+    // `redirect_after_connect` at a route name like `dashboard`.
+    Route::get( '/dashboard-after-connect', fn () => 'ok' )->name( 'dashboard-after-connect' );
+    config( [ 'microsoft-oauth.routes.redirect_after_connect' => 'dashboard-after-connect' ] );
+
+    session( [
+        'microsoft_oauth.state'    => 'state-route',
+        'microsoft_oauth.verifier' => 'verifier-route',
+        'microsoft_oauth.user_id'  => 88,
+    ] );
+
+    Http::fake( [
+        'https://login.microsoftonline.com/common/oauth2/v2.0/token' => Http::response( [
+            'access_token' => 'a',
+            'token_type'   => 'Bearer',
+            'expires_in'   => 3600,
+            'scope'        => 'openid profile email offline_access',
+        ], 200 ),
+    ] );
+
+    $response = $this->get( '/auth/microsoft/callback?code=code-1&state=state-route' );
+
+    $response->assertRedirect( route( 'dashboard-after-connect' ) );
+    $response->assertSessionHas( 'microsoft.status', 'connected' );
 } );
 
 it( 'reauthorize redirects to the Microsoft consent URL when new scopes are missing', function (): void {
