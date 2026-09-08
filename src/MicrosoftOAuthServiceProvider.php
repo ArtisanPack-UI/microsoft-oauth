@@ -21,8 +21,11 @@ use ArtisanPackUI\MicrosoftOAuth\Configuration\CmsSettingsDriver;
 use ArtisanPackUI\MicrosoftOAuth\Configuration\ConfigDriver;
 use ArtisanPackUI\MicrosoftOAuth\Configuration\DatabaseDriver;
 use ArtisanPackUI\MicrosoftOAuth\Contracts\ConfigurationRepository;
+use ArtisanPackUI\MicrosoftOAuth\Contracts\TokenProvider;
+use ArtisanPackUI\MicrosoftOAuth\OAuth\MicrosoftOAuthManager;
 use ArtisanPackUI\MicrosoftOAuth\OAuth\OAuthManager;
 use ArtisanPackUI\MicrosoftOAuth\Scopes\ScopeRegistry;
+use ArtisanPackUI\MicrosoftOAuth\Tokens\DefaultTokenProvider;
 use ArtisanPackUI\MicrosoftOAuth\Tokens\TokenManager;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Http\Client\Factory as HttpFactory;
@@ -122,6 +125,24 @@ class MicrosoftOAuthServiceProvider extends ServiceProvider
         $this->app->scoped( TokenManager::class, function ( Application $app ): TokenManager {
             return new TokenManager(
                 $app->make( ConfigurationRepository::class ),
+                $app->make( HttpFactory::class ),
+            );
+        } );
+
+        // Scoped for the same reason as TokenManager: this holds a reference
+        // to the scoped TokenManager, so pinning it as a singleton on Octane
+        // or a long-lived queue worker would keep serving tokens from a
+        // stale credential row after another lifecycle rewrote it.
+        $this->app->scoped(
+            TokenProvider::class,
+            fn ( Application $app ): TokenProvider => new DefaultTokenProvider(
+                $app->make( TokenManager::class ),
+            ),
+        );
+
+        $this->app->scoped( MicrosoftOAuthManager::class, function ( Application $app ): MicrosoftOAuthManager {
+            return new MicrosoftOAuthManager(
+                $app->make( TokenProvider::class ),
                 $app->make( HttpFactory::class ),
             );
         } );
