@@ -1,0 +1,544 @@
+<?php
+
+/**
+ * Microsoft identity platform OAuth2 authorization-code flow manager.
+ *
+ * @package    ArtisanPack_UI
+ * @subpackage MicrosoftOAuth
+ *
+ * @since      1.0.0
+ */
+
+declare( strict_types=1 );
+
+namespace ArtisanPackUI\MicrosoftOAuth\OAuth;
+
+use ArtisanPackUI\MicrosoftOAuth\Contracts\ConfigurationRepository;
+use ArtisanPackUI\MicrosoftOAuth\Exceptions\OAuthException;
+use ArtisanPackUI\MicrosoftOAuth\Models\MicrosoftConnection;
+use ArtisanPackUI\MicrosoftOAuth\Scopes\ScopeRegistry;
+use Illuminate\Contracts\Config\Repository as ConfigRepository;
+use Illuminate\Contracts\Session\Session;
+use Illuminate\Database\QueryException;
+use Illuminate\Http\Client\Factory as HttpFactory;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Str;
+
+/**
+ * Drives the Microsoft identity platform v2.0 authorization-code flow with PKCE.
+ *
+ * `authorizationUrl()` builds the URL to send the user to, stashing `state`
+ * and the PKCE `code_verifier` in the session. `handleCallback()` validates
+ * `state`, exchanges the returned `code` for tokens, and persists the
+ * connection as a {@see MicrosoftConnection} with encrypted access +
+ * refresh tokens (Laravel `Crypt`).
+ *
+ * The `offline_access` scope is always requested so Microsoft returns a
+ * refresh token — a hard requirement for downstream integrations that need
+ * long-lived access.
+ *
+ * @since 1.0.0
+ */
+class OAuthManager
+{
+    protected const SESSION_STATE       = 'microsoft_oauth.state';
+
+    protected const SESSION_VERIFIER    = 'microsoft_oauth.verifier';
+
+    protected const SESSION_USER_ID     = 'microsoft_oauth.user_id';
+
+    protected const SESSION_INCREMENTAL = 'microsoft_oauth.incremental';
+
+    public function __construct(
+        protected ConfigurationRepository $credentials,
+        protected ConfigRepository $config,
+        protected Session $session,
+        protected HttpFactory $http,
+        protected ScopeRegistry $scopes,
+    ) {
+    }
+
+    /**
+     * Build the Microsoft authorization URL for a given user.
+     *
+     * @since 1.0.0
+     *
+     * @param  int|string  $userId  The user we're connecting a Microsoft account to.
+     * @param  array<int, string>  $additionalScopes  Extra scopes to request alongside the baseline.
+     */
+    public function authorizationUrl( int|string $userId, array $additionalScopes = [] ): string
+    {
+        $this->session->forget( self::SESSION_INCREMENTAL );
+
+        return $this->buildAuthorizationUrl(
+            $userId,
+            $this->mergeScopes( $additionalScopes ),
+            (string) $this->config->get( 'microsoft-oauth.prompt', 'select_account' ),
+        );
+    }
+
+    /**
+     * Build an incremental-consent authorization URL for a user who already
+     * has a {@see MicrosoftConnection} but is missing scopes required by
+     * newly-registered dependent services.
+     *
+     * Returns an {@see IncrementalConsentResult} case instead of a URL when
+     * there is nothing to send the user to — `NoConnection` when the user
+     * has never connected (caller should route them through the full connect
+     * flow) or `AlreadyAuthorized` when every registered scope is already
+     * granted. When a URL is returned, a session flag is set so
+     * {@see handleCallback()} preserves previously-granted scopes on top of
+     * what Microsoft returns in the token response.
+     *
+     * @since 1.0.0
+     */
+    public function incrementalAuthorizationUrl( int|string $userId ): string|IncrementalConsentResult
+    {
+        $connection = MicrosoftConnection::where( 'user_id', $userId )->first();
+
+        if ( null === $connection ) {
+            return IncrementalConsentResult::NoConnection;
+        }
+
+        $granted = $connection->grantedScopes();
+        $missing = $this->scopes->missing( $granted );
+
+        if ( [] === $missing ) {
+            return IncrementalConsentResult::AlreadyAuthorized;
+        }
+
+        // Request the full union so Microsoft has the complete picture and
+        // returns a token valid for every scope the app needs. The consent
+        // screen still only asks for the delta — Microsoft skips prompts for
+        // scopes the user has already granted. `prompt=consent` forces the
+        // consent screen so the user has an opportunity to approve the added
+        // scopes even if their tenant would otherwise auto-consent.
+        $url = $this->buildAuthorizationUrl(
+            $userId,
+            $this->mergeScopes( [] ),
+            'consent',
+        );
+
+        $this->session->put( self::SESSION_INCREMENTAL, true );
+
+        return $url;
+    }
+
+    /**
+     * Handle the OAuth callback: verify state, exchange the code, and
+     * persist the resulting tokens on a {@see MicrosoftConnection}.
+     *
+     * Access and refresh tokens are stored encrypted via Laravel's
+     * `encrypted` cast on the model. The returned model is either newly
+     * created or updated in place for the connecting user, so downstream
+     * code can wire the callback directly into service-specific
+     * bootstrapping without another DB round-trip.
+     *
+     * @since 1.0.0
+     */
+    public function handleCallback( string $code, string $returnedState ): MicrosoftConnection
+    {
+        $storedState = $this->session->pull( self::SESSION_STATE );
+        $verifier    = $this->session->pull( self::SESSION_VERIFIER );
+        $userId      = $this->session->pull( self::SESSION_USER_ID );
+        $incremental = (bool) $this->session->pull( self::SESSION_INCREMENTAL, false );
+
+        if ( empty( $storedState ) || ! hash_equals( (string) $storedState, $returnedState ) ) {
+            throw new OAuthException( __( 'OAuth state mismatch; possible CSRF attempt.' ) );
+        }
+
+        if ( empty( $verifier ) ) {
+            throw new OAuthException( __( 'PKCE code verifier missing from session.' ) );
+        }
+
+        if ( empty( $userId ) ) {
+            throw new OAuthException( __( 'OAuth session missing user context.' ) );
+        }
+
+        $body = [
+            'client_id'     => $this->requireClientId(),
+            'redirect_uri'  => $this->requireConfig( 'microsoft-oauth.redirect_uri' ),
+            'grant_type'    => 'authorization_code',
+            'code'          => $code,
+            'code_verifier' => (string) $verifier,
+            'scope'         => implode( ' ', $this->mergeScopes( [] ) ),
+        ];
+
+        // Confidential clients (web apps registered with a secret) send the
+        // secret; public clients (SPA / native) rely on PKCE alone.
+        $secret = (string) ( $this->credentials->getClientSecret() ?? '' );
+        if ( '' !== $secret ) {
+            $body[ 'client_secret' ] = $secret;
+        }
+
+        $response = $this->http->asForm()->post( $this->tokenEndpoint(), $body );
+
+        if ( ! $response->successful() ) {
+            $payload = $response->json();
+            $error   = 'exchange_failed';
+
+            if ( is_array( $payload ) ) {
+                $error = (string) ( $payload[ 'error_description' ]
+                    ?? $payload[ 'error' ]
+                    ?? 'exchange_failed' );
+            }
+
+            throw new OAuthException(
+                __( 'Microsoft code exchange failed: :error', [ 'error' => $error ] ),
+            );
+        }
+
+        $payload = $response->json();
+
+        if ( ! is_array( $payload ) || empty( $payload[ 'access_token' ] ) ) {
+            throw new OAuthException( __( 'Microsoft code exchange returned an invalid payload.' ) );
+        }
+
+        $expiresAt = isset( $payload[ 'expires_in' ] )
+            ? Carbon::now()->addSeconds( (int) $payload[ 'expires_in' ] )
+            : null;
+
+        $scopes = isset( $payload[ 'scope' ] )
+            ? array_values( array_filter( explode( ' ', (string) $payload[ 'scope' ] ) ) )
+            : $this->mergeScopes( [] );
+
+        [ $microsoftUserId, $email, $tid ] = $this->extractIdentity( $payload[ 'id_token' ] ?? null );
+
+        // The configured authority (`common` / `organizations` / `consumers`
+        // / GUID / verified domain) determines which tid values are allowed
+        // in the returned id_token. A mismatch is a real-world security
+        // concern on multi-tenant apps — a `consumers`-only registration
+        // must reject work accounts, and vice versa — so we fail the
+        // exchange loudly rather than silently persisting a connection the
+        // downstream integration can't legitimately use.
+        $this->authority()->assertTidMatches( $tid );
+
+        return $this->persistConnection(
+            $userId,
+            $microsoftUserId,
+            $email,
+            $tid,
+            $payload,
+            $scopes,
+            $expiresAt,
+            $incremental,
+        );
+    }
+
+    /**
+     * Assemble a Microsoft authorization URL and stash the accompanying
+     * PKCE / state values in the session.
+     *
+     * @since 1.0.0
+     *
+     * @param  list<string>  $scopes  Deduplicated list of scopes to request.
+     */
+    protected function buildAuthorizationUrl( int|string $userId, array $scopes, string $prompt ): string
+    {
+        $clientId = $this->requireClientId();
+        $redirect = $this->requireConfig( 'microsoft-oauth.redirect_uri' );
+
+        $state     = Str::random( 40 );
+        $verifier  = $this->generateVerifier();
+        $challenge = $this->generateChallenge( $verifier );
+
+        $this->session->put( self::SESSION_STATE, $state );
+        $this->session->put( self::SESSION_VERIFIER, $verifier );
+        $this->session->put( self::SESSION_USER_ID, $userId );
+
+        $params = [
+            'client_id'             => $clientId,
+            'response_type'         => 'code',
+            'redirect_uri'          => $redirect,
+            'response_mode'         => 'query',
+            'scope'                 => implode( ' ', $scopes ),
+            'state'                 => $state,
+            'code_challenge'        => $challenge,
+            'code_challenge_method' => 'S256',
+            'prompt'                => $prompt,
+        ];
+
+        return $this->authorizeEndpoint() . '?' . http_build_query( $params );
+    }
+
+    /**
+     * Upsert the {@see MicrosoftConnection} for the connecting user.
+     *
+     * A duplicate-key failure from `save()` means a concurrent callback
+     * for the same user just won the race and inserted the row first —
+     * fetch that row and re-apply our tokens to it instead of losing
+     * the exchange we just performed.
+     *
+     * @since 1.0.0
+     *
+     * @param  array<string, mixed>  $payload  The parsed token response body.
+     * @param  array<int, string>  $scopes  Scopes granted by Microsoft.
+     */
+    protected function persistConnection(
+        int|string $userId,
+        ?string $microsoftUserId,
+        ?string $email,
+        ?string $tid,
+        array $payload,
+        array $scopes,
+        ?Carbon $expiresAt,
+        bool $incremental = false,
+    ): MicrosoftConnection {
+        $connection = MicrosoftConnection::firstOrNew( [ 'user_id' => $userId ] );
+
+        $this->applyTokens( $connection, $microsoftUserId, $email, $tid, $payload, $scopes, $expiresAt, $incremental );
+
+        try {
+            $connection->save();
+        } catch ( QueryException $e ) {
+            if ( ! $this->isDuplicateKeyException( $e ) ) {
+                throw $e;
+            }
+
+            $connection = MicrosoftConnection::where( 'user_id', $userId )->firstOrFail();
+            $this->applyTokens( $connection, $microsoftUserId, $email, $tid, $payload, $scopes, $expiresAt, $incremental );
+            $connection->save();
+        }
+
+        return $connection;
+    }
+
+    /**
+     * Copy the exchange-response fields onto the connection.
+     *
+     * @param  array<string, mixed>  $payload
+     * @param  array<int, string>  $scopes
+     */
+    protected function applyTokens(
+        MicrosoftConnection $connection,
+        ?string $microsoftUserId,
+        ?string $email,
+        ?string $tid,
+        array $payload,
+        array $scopes,
+        ?Carbon $expiresAt,
+        bool $incremental = false,
+    ): void {
+        // On an incremental-consent re-auth the token response reflects only
+        // the scopes the user granted in *this* exchange, but the user's
+        // consent on the Microsoft side is cumulative. Union with the
+        // previously-recorded scopes so ScopeRegistry::missing() keeps
+        // reporting a correct picture after re-auth.
+        if ( $incremental ) {
+            $scopes = $this->unionScopes( $connection->grantedScopes(), $scopes );
+        }
+
+        $connection->microsoft_user_id = $microsoftUserId ?? $connection->microsoft_user_id;
+        $connection->email             = $email ?? $connection->email;
+        $connection->tid               = $tid ?? $connection->tid;
+        $connection->access_token      = (string) $payload[ 'access_token' ];
+        $connection->token_type        = (string) ( $payload[ 'token_type' ] ?? 'Bearer' );
+        $connection->scopes            = $scopes;
+        $connection->expires_at        = $expiresAt;
+        $connection->status            = MicrosoftConnection::STATUS_CONNECTED;
+        $connection->disconnect_reason = null;
+
+        // Microsoft returns a refresh_token on every successful exchange
+        // when `offline_access` is granted (unlike Google, which only issues
+        // it on first consent). Still guard against a missing value so an
+        // unexpected response can't wipe the existing token on file.
+        if ( ! empty( $payload[ 'refresh_token' ] ) ) {
+            $connection->refresh_token = (string) $payload[ 'refresh_token' ];
+        }
+    }
+
+    /**
+     * Detect the driver-specific duplicate-key error raised when a concurrent
+     * insert for the same `user_id` hits our unique index first.
+     *
+     * MySQL uses SQLSTATE 23000 (integrity constraint violation) with vendor
+     * code 1062; Postgres uses 23505 (unique_violation); SQLite reports
+     * SQLSTATE 23000 with vendor code 19 and "UNIQUE constraint failed" in
+     * the message.
+     *
+     * @since 1.0.0
+     */
+    protected function isDuplicateKeyException( QueryException $e ): bool
+    {
+        if ( '23505' === $e->getCode() ) {
+            return true;
+        }
+
+        if ( '23000' !== $e->getCode() ) {
+            return false;
+        }
+
+        $message = $e->getMessage();
+
+        return str_contains( $message, '1062' )
+            || str_contains( $message, 'UNIQUE constraint failed' )
+            || str_contains( $message, 'Duplicate entry' );
+    }
+
+    /**
+     * Merge caller-supplied scopes with those contributed by the
+     * {@see ScopeRegistry} (baseline identity scopes + anything registered
+     * via the `ap.microsoft.oauth.scopes` filter or imperatively),
+     * deduplicated.
+     *
+     * @param  array<int, string>  $additional
+     *
+     * @return list<string>
+     */
+    protected function mergeScopes( array $additional ): array
+    {
+        return $this->unionScopes( $this->scopes->all(), $additional );
+    }
+
+    /**
+     * Deduplicated union of two or more scope lists, preserving order (each
+     * list's scopes appear before the next list's, whitespace-only entries
+     * are dropped).
+     *
+     * @since 1.0.0
+     *
+     * @param  array<int, string>  ...$lists
+     *
+     * @return list<string>
+     */
+    protected function unionScopes( array ...$lists ): array
+    {
+        $merged = [];
+
+        foreach ( $lists as $list ) {
+            foreach ( $list as $scope ) {
+                $merged[] = (string) $scope;
+            }
+        }
+
+        $merged = array_map( 'trim', $merged );
+        $merged = array_filter( $merged, static fn ( string $s ): bool => '' !== $s );
+
+        return array_values( array_unique( $merged ) );
+    }
+
+    /**
+     * Decode the `oid`/`sub` and `email`/`preferred_username` claims from
+     * Microsoft's `id_token`. Identity is only used for persistence, not
+     * authorization, so signature verification is not required here — the
+     * token came from the TLS-terminated exchange with Microsoft.
+     *
+     * @since 1.0.0
+     *
+     * @return array{0: ?string, 1: ?string, 2: ?string} [microsoft_user_id, email, tid]
+     */
+    protected function extractIdentity( ?string $idToken ): array
+    {
+        if ( empty( $idToken ) ) {
+            return [ null, null, null ];
+        }
+
+        $parts = explode( '.', $idToken );
+        if ( 3 !== count( $parts ) ) {
+            return [ null, null, null ];
+        }
+
+        $payload = base64_decode( strtr( $parts[ 1 ], '-_', '+/' ), true );
+        if ( false === $payload ) {
+            return [ null, null, null ];
+        }
+
+        $claims = json_decode( $payload, true );
+        if ( ! is_array( $claims ) ) {
+            return [ null, null, null ];
+        }
+
+        // `oid` is stable across tenants for a work/school account; `sub` is
+        // stable per app+user for personal accounts. Prefer `oid` when both
+        // are present.
+        $userId = null;
+        if ( isset( $claims[ 'oid' ] ) ) {
+            $userId = (string) $claims[ 'oid' ];
+        } elseif ( isset( $claims[ 'sub' ] ) ) {
+            $userId = (string) $claims[ 'sub' ];
+        }
+
+        $email = null;
+        if ( isset( $claims[ 'email' ] ) ) {
+            $email = (string) $claims[ 'email' ];
+        } elseif ( isset( $claims[ 'preferred_username' ] ) ) {
+            $email = (string) $claims[ 'preferred_username' ];
+        }
+
+        $tid = null;
+        if ( isset( $claims[ 'tid' ] ) ) {
+            $tid = (string) $claims[ 'tid' ];
+        }
+
+        return [ $userId, $email, $tid ];
+    }
+
+    protected function authorizeEndpoint(): string
+    {
+        return $this->buildEndpoint( 'authorize' );
+    }
+
+    protected function tokenEndpoint(): string
+    {
+        return $this->buildEndpoint( 'token' );
+    }
+
+    protected function buildEndpoint( string $type ): string
+    {
+        return "https://login.microsoftonline.com/{$this->authority()->value()}/oauth2/v2.0/{$type}";
+    }
+
+    /**
+     * Resolve the configured tenant into a {@see TenantAuthority}.
+     *
+     * Called on every endpoint build and every tid check so an operator
+     * flipping `microsoft-oauth.tenant` (via the database or CMS driver)
+     * mid-request is picked up on the next call — matching the scoped
+     * driver bindings in the service provider.
+     *
+     * @since 1.0.0
+     *
+     * @throws OAuthException When the configured tenant value is not a
+     *                        recognized authority form.
+     */
+    protected function authority(): TenantAuthority
+    {
+        return TenantAuthority::fromConfig( $this->credentials->getTenant() );
+    }
+
+    protected function requireClientId(): string
+    {
+        $clientId = (string) ( $this->credentials->getClientId() ?? '' );
+
+        if ( '' === $clientId ) {
+            throw new OAuthException(
+                __( 'Microsoft OAuth is not configured: client_id is missing.' ),
+            );
+        }
+
+        return $clientId;
+    }
+
+    protected function requireConfig( string $key ): string
+    {
+        $value = (string) $this->config->get( $key, '' );
+
+        if ( '' === $value ) {
+            throw new OAuthException(
+                __( 'Microsoft OAuth is not configured: :key is missing.', [ 'key' => $key ] ),
+            );
+        }
+
+        return $value;
+    }
+
+    protected function generateVerifier(): string
+    {
+        return rtrim( strtr( base64_encode( random_bytes( 64 ) ), '+/', '-_' ), '=' );
+    }
+
+    protected function generateChallenge( string $verifier ): string
+    {
+        return rtrim( strtr( base64_encode( hash( 'sha256', $verifier, true ) ), '+/', '-_' ), '=' );
+    }
+}
