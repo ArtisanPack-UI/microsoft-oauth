@@ -3,15 +3,17 @@ name: CI
 on:
   push:
     branches: [main]
-    tags:
-      - 'v*'
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
-  build:
+  lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    name: Lint
 
     steps:
       - uses: actions/checkout@v4
@@ -19,7 +21,7 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.2'
+          php-version: '8.4'
           extensions: dom, curl, libxml, mbstring, zip, pdo, sqlite, pdo_sqlite
           coverage: none
 
@@ -37,20 +39,21 @@ jobs:
       - name: Install dependencies
         run: composer install --no-interaction --prefer-dist --optimize-autoloader
 
-      - name: Run lint
-        run: composer lint
+      - name: Run PHP-CS-Fixer
+        run: ./vendor/bin/php-cs-fixer fix --dry-run --diff
 
-      - name: Upload vendor directory
-        uses: actions/upload-artifact@v4
-        with:
-          name: vendor
-          path: vendor/
-          retention-days: 1
+      - name: Run PHPCS
+        run: ./vendor/bin/phpcs
 
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    name: Test
+    name: Test (PHP ${{ matrix.php }})
+
+    strategy:
+      fail-fast: true
+      matrix:
+        php: ['8.3', '8.4']
 
     steps:
       - uses: actions/checkout@v4
@@ -58,7 +61,7 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.2'
+          php-version: ${{ matrix.php }}
           extensions: dom, curl, libxml, mbstring, zip, pdo, sqlite, pdo_sqlite
           coverage: none
 
@@ -70,62 +73,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ steps.composer-cache.outputs.dir }}
-          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
-          restore-keys: ${{ runner.os }}-composer-
+          key: ${{ runner.os }}-php${{ matrix.php }}-composer-${{ hashFiles('**/composer.json') }}
+          restore-keys: ${{ runner.os }}-php${{ matrix.php }}-composer-
 
       - name: Install dependencies
-        run: composer install --no-interaction --prefer-dist
+        run: composer update --no-interaction --prefer-dist
 
-      - name: Run Unit tests
+      - name: Run tests
         env:
           XDEBUG_MODE: off
-        run: php vendor/bin/pest tests/Unit --no-coverage
-
-      - name: Run Feature tests
-        env:
-          XDEBUG_MODE: off
-        run: php vendor/bin/pest tests/Feature --no-coverage
-
-  release:
-    needs: [build, test]
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-    name: Create Release
-
-    permissions:
-      contents: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Extract release notes from CHANGELOG
-        id: changelog
-        run: |
-          VERSION=${GITHUB_REF#refs/tags/v}
-          echo "Extracting notes for version $VERSION"
-
-          if [ -f "CHANGELOG.md" ]; then
-            # Extract section for this version; stop at the next "## [" heading
-            # if one exists, otherwise take the rest of the file.
-            NOTES=$(awk -v ver="$VERSION" '
-              $0 ~ "^## \\[" ver "\\]" { capture = 1; next }
-              capture && /^## \[/ { exit }
-              capture { print }
-            ' CHANGELOG.md | sed '/^$/d')
-            if [ -z "$NOTES" ]; then
-              NOTES="Release $VERSION. See CHANGELOG.md for details."
-            fi
-          else
-            NOTES="Release $VERSION"
-          fi
-
-          # Save to file for multi-line support
-          echo "$NOTES" > release_notes.txt
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          body_path: release_notes.txt
-          generate_release_notes: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: vendor/bin/pest --no-coverage
