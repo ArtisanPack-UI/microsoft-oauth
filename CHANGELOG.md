@@ -9,12 +9,11 @@
 - **Broker client mode** (`MICROSOFT_OAUTH_MODE=broker`). Connect, callback and refresh run through an OAuth broker using only `microsoft-oauth.broker.url`, `site_id` and `site_secret`, so the site holds no Microsoft client secret and the broker owns the tenant authority. Signed `/authorize` links, one-time code exchange at `/token`, refreshes at `/refresh`, and incremental consent passing the scope union through `scopes=`. `return_url` defaults to the package callback route. Broker credentials can come from the `ap.microsoft.oauth.broker.credentials` filter. `MicrosoftOAuth::broker()` and `MicrosoftOAuth::usesBroker()` expose the client and mode. The broker URL must be HTTPS (plain HTTP only for `localhost`, `*.localhost`, `*.test` and loopback hosts).
 - `LicenseExpiredException` (extends `TokenRefreshException`) for the broker's `402 license_expired` refresh response, carrying `getRenewUrl()`. The connection stays connected, unlike a revoked grant. The callback flashes a broker-host `renew_url` as `microsoft.renew_url`.
 - `OAuthException` and `TokenRefreshException` expose the OAuth error code via `getError()`.
-- `ConfigurationRepository::getRedirectUri()`. The database driver stores it in a new nullable `redirect_uri` column, and the CMS driver in the `artisanpack_microsoft_oauth_redirect_uri` setting. When a driver has none, `microsoft-oauth.redirect_uri` is used, as before.
+- Optional `ProvidesRedirectUri` contract (`getRedirectUri()`) so credential drivers can supply the redirect URI. All three bundled drivers implement it: the database driver stores it in a new nullable `redirect_uri` column, and the CMS driver in the `artisanpack_microsoft_oauth_redirect_uri` setting. When a driver has none (or doesn't implement the contract), `microsoft-oauth.redirect_uri` is used, as before. `ConfigurationRepository` itself is unchanged, so custom drivers keep working.
 
 ### Changed
 
 - `OAuthManager::handleCallback()` and `TokenManager::refresh()` are now thin wrappers that run the stateless primitives and then persist to `MicrosoftConnection`. Behavior in the default `direct` mode is unchanged.
-- Custom `ConfigurationRepository` implementations must add `getRedirectUri()`; returning `null` keeps the config fallback.
 - Refreshes now validate the configured tenant like the authorization flow does; an invalid tenant raises `TokenRefreshException` (`getError()` is `invalid_tenant`) without disconnecting the connection.
 
 ## [1.0.0] - 2026-09-18

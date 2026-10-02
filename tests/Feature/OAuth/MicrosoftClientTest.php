@@ -3,12 +3,14 @@
 declare( strict_types=1 );
 
 use ArtisanPackUI\MicrosoftOAuth\Configuration\ConfigDriver;
+use ArtisanPackUI\MicrosoftOAuth\Contracts\ConfigurationRepository;
 use ArtisanPackUI\MicrosoftOAuth\Exceptions\OAuthException;
 use ArtisanPackUI\MicrosoftOAuth\Exceptions\TokenRefreshException;
 use ArtisanPackUI\MicrosoftOAuth\Facades\MicrosoftOAuth;
 use ArtisanPackUI\MicrosoftOAuth\Models\MicrosoftConnection;
 use ArtisanPackUI\MicrosoftOAuth\OAuth\MicrosoftClient;
 use ArtisanPackUI\MicrosoftOAuth\OAuth\MicrosoftCredentials;
+use ArtisanPackUI\MicrosoftOAuth\OAuth\OAuthManager;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
@@ -307,4 +309,42 @@ it( 'falls back to the configured redirect URI when the driver has none', functi
 
     expect( MicrosoftCredentials::fromRepository( $driver, 'https://fallback.test/cb' )->redirectUri )
         ->toBe( 'https://fallback.test/cb' );
+} );
+
+it( 'keeps working with a 1.0-style custom driver that has no redirect URI method', function (): void {
+    config( [ 'microsoft-oauth.redirect_uri' => 'https://config.test/cb' ] );
+
+    $legacyDriver = new class implements ConfigurationRepository {
+        public function getClientId(): ?string
+        {
+            return 'legacy-client';
+        }
+
+        public function getClientSecret(): ?string
+        {
+            return null;
+        }
+
+        public function getTenant(): ?string
+        {
+            return 'common';
+        }
+
+        public function save( array $credentials ): void
+        {
+        }
+
+        public function isConfigured(): bool
+        {
+            return true;
+        }
+    };
+
+    app()->instance( ConfigurationRepository::class, $legacyDriver );
+    app()->forgetScopedInstances();
+
+    parse_str( parse_url( app( OAuthManager::class )->authorizationUrl( 1 ), PHP_URL_QUERY ), $query );
+
+    expect( $query['client_id'] )->toBe( 'legacy-client' );
+    expect( $query['redirect_uri'] )->toBe( 'https://config.test/cb' );
 } );

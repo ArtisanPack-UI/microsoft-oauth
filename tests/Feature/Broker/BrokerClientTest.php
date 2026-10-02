@@ -196,6 +196,19 @@ it( 'only trusts renew URLs on the broker host', function (): void {
     expect( $this->broker->isTrustedRenewUrl( '' ) )->toBeFalse();
 } );
 
+it( 'rejects renew URLs that browsers could resolve to another host', function ( string $url ): void {
+    expect( $this->broker->isTrustedRenewUrl( $url ) )->toBeFalse();
+} )->with( [
+    'backslash before userinfo' => 'https://evil.test\\@workshop.test/renew',
+    'userinfo'                  => 'https://evil.test@workshop.test/renew',
+    'user and password'         => 'https://user:pass@workshop.test/renew',
+    'embedded whitespace'       => 'https://workshop.test /renew',
+    'tab'                       => "https://workshop.test\t/renew",
+    'newline'                   => "https://workshop.test/renew\n",
+    'null byte'                 => "https://workshop.test\0/renew",
+    'unparseable'               => 'https:///renew',
+] );
+
 it( 'rejects an HTTP renew URL for an HTTPS broker but allows it for a local HTTP broker', function (): void {
     expect( $this->broker->isTrustedRenewUrl( 'http://workshop.test/renew' ) )->toBeFalse();
 

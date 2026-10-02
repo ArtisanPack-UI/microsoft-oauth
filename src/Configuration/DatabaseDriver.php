@@ -14,6 +14,7 @@ declare( strict_types=1 );
 namespace ArtisanPackUI\MicrosoftOAuth\Configuration;
 
 use ArtisanPackUI\MicrosoftOAuth\Contracts\ConfigurationRepository;
+use ArtisanPackUI\MicrosoftOAuth\Contracts\ProvidesRedirectUri;
 use Illuminate\Contracts\Encryption\Encrypter;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Support\Facades\Log;
@@ -27,7 +28,7 @@ use Throwable;
  *
  * @since 1.0.0
  */
-class DatabaseDriver implements ConfigurationRepository
+class DatabaseDriver implements ConfigurationRepository, ProvidesRedirectUri
 {
 
     /**

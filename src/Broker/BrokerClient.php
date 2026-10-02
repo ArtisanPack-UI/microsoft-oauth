@@ -210,16 +210,27 @@ class BrokerClient
      * broker host and uses HTTPS (or the broker's own scheme, for a local
      * HTTP broker) — never a downgrade from an HTTPS broker.
      *
+     * URLs that PHP and browsers could parse differently are rejected
+     * before the host comparison: backslashes, whitespace and control
+     * characters, and any userinfo (`https://evil\@broker/…` parses to the
+     * broker host in PHP but to `evil` in a browser).
+     *
      * @since 1.1.0
      */
     public function isTrustedRenewUrl( ?string $url ): bool
     {
-        if ( null === $url || '' === $url ) {
+        if ( null === $url || '' === $url || 1 === preg_match( '/[\\\\\s\x00-\x1F\x7F]/', $url ) ) {
             return false;
         }
 
-        $scheme        = strtolower( (string) parse_url( $url, PHP_URL_SCHEME ) );
-        $host          = strtolower( (string) parse_url( $url, PHP_URL_HOST ) );
+        $parts = parse_url( $url );
+
+        if ( ! is_array( $parts ) || isset( $parts['user'] ) || isset( $parts['pass'] ) ) {
+            return false;
+        }
+
+        $scheme        = strtolower( (string) ( $parts['scheme'] ?? '' ) );
+        $host          = strtolower( (string) ( $parts['host'] ?? '' ) );
         $brokerScheme  = strtolower( (string) parse_url( $this->credentials->url, PHP_URL_SCHEME ) );
         $brokerHost    = strtolower( (string) parse_url( $this->credentials->url, PHP_URL_HOST ) );
         $allowedScheme = 'https' === $scheme || ( 'http' === $scheme && 'http' === $brokerScheme );

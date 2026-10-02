@@ -14,6 +14,7 @@ declare( strict_types=1 );
 namespace ArtisanPackUI\MicrosoftOAuth\Configuration;
 
 use ArtisanPackUI\MicrosoftOAuth\Contracts\ConfigurationRepository;
+use ArtisanPackUI\MicrosoftOAuth\Contracts\ProvidesRedirectUri;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use RuntimeException;
 
@@ -24,7 +25,7 @@ use RuntimeException;
  *
  * @since 1.0.0
  */
-class ConfigDriver implements ConfigurationRepository
+class ConfigDriver implements ConfigurationRepository, ProvidesRedirectUri
 {
     public function __construct( protected ConfigRepository $config )
     {

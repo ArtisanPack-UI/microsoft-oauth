@@ -14,6 +14,7 @@ declare( strict_types=1 );
 namespace ArtisanPackUI\MicrosoftOAuth\Configuration;
 
 use ArtisanPackUI\MicrosoftOAuth\Contracts\ConfigurationRepository;
+use ArtisanPackUI\MicrosoftOAuth\Contracts\ProvidesRedirectUri;
 use Illuminate\Contracts\Encryption\Encrypter;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -29,7 +30,7 @@ use Throwable;
  *
  * @since 1.0.0
  */
-class CmsSettingsDriver implements ConfigurationRepository
+class CmsSettingsDriver implements ConfigurationRepository, ProvidesRedirectUri
 {
     public const KEY_CLIENT_ID     = 'artisanpack_microsoft_oauth_client_id';
 

@@ -14,6 +14,7 @@ declare( strict_types=1 );
 namespace ArtisanPackUI\MicrosoftOAuth\OAuth;
 
 use ArtisanPackUI\MicrosoftOAuth\Contracts\ConfigurationRepository;
+use ArtisanPackUI\MicrosoftOAuth\Contracts\ProvidesRedirectUri;
 
 /**
  * Immutable set of Microsoft identity platform app credentials.
@@ -48,7 +49,7 @@ final class MicrosoftCredentials
      * @since 1.1.0
      *
      * @param  ConfigurationRepository  $repository           The credential driver to read.
-     * @param  string|null              $fallbackRedirectUri  Redirect URI to use when the driver has none.
+     * @param  string|null              $fallbackRedirectUri  Redirect URI to use when the driver has none (or does not implement {@see ProvidesRedirectUri}).
      */
     public static function fromRepository( ConfigurationRepository $repository, ?string $fallbackRedirectUri = null ): self
     {
@@ -56,7 +57,8 @@ final class MicrosoftCredentials
             (string) ( $repository->getClientId() ?? '' ),
             self::nullIfEmpty( $repository->getClientSecret() ),
             self::nullIfEmpty( $repository->getTenant() ),
-            self::nullIfEmpty( $repository->getRedirectUri() ) ?? self::nullIfEmpty( $fallbackRedirectUri ),
+            self::nullIfEmpty( $repository instanceof ProvidesRedirectUri ? $repository->getRedirectUri() : null )
+                ?? self::nullIfEmpty( $fallbackRedirectUri ),
         );
     }
 
