@@ -100,6 +100,8 @@ Two things worth noting:
 
 The `microsoft_oauth.incremental` session flag is set so `handleCallback()` knows to union the returned scopes with the previously-recorded ones rather than replacing them. Without the flag, an incremental re-auth that returns just the new scope would look like the user had lost every other previously-granted scope.
 
+In [broker mode](Broker#incremental-consent) the signed broker link carries the full union through `scopes=`. The broker controls the Microsoft `prompt`, so `prompt=consent` isn't sent from this side. The session flag and scope union work the same way.
+
 ## Wiring it into your UI
 
 Compute the "needs reauthorize" state yourself from the connection and the scope registry:

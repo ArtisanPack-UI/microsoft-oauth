@@ -22,7 +22,9 @@ Shared Microsoft identity platform (Entra / Azure AD) OAuth2 broker for the Arti
 - **Encrypted token storage** on a per-user `microsoft_connections` model, with transparent refresh via the [token manager](docs/tokens.md).
 - A **scope registry** that lets any installed service package contribute the scopes it needs. Consent covers the union so users only see one screen.
 - **Tenant authority resolution** — parses `common` / `organizations` / `consumers` / GUID / verified domain, builds the right authorize + token URLs, and enforces the returned `tid` claim against the configured authority.
-- **Credential storage drivers** (config file, database, or CMS Settings) so credentials can live wherever a project already stores its secrets.
+- **Credential storage drivers** (config file, database, or CMS Settings) so credentials, including the redirect URI, can live wherever a project already stores its secrets.
+- **[Broker mode](docs/broker.md)**: run connect, callback, and refresh through an OAuth broker so the site never holds a Microsoft client secret.
+- **[Stateless OAuth primitives](docs/stateless-client.md)**: `MicrosoftOAuth::client()` builds consent URLs, exchanges codes, and refreshes tokens without touching the session or database, for building brokers and custom flows.
 - A **bearer-ready HTTP client** — `MicrosoftOAuth::request( $userId )` returns a Laravel `PendingRequest` that already carries an `Authorization: Bearer …` header for the given user's connection.
 
 Service packages (Bing Places, Graph integrations, …) declare the scopes they need and, once a user has connected, call `MicrosoftOAuth::request( $userId )` (or the underlying `TokenProvider` contract) to make authenticated API calls. They never touch OAuth themselves.
@@ -231,7 +233,9 @@ Key options in `config/microsoft-oauth.php`:
 | Key | Default | Meaning |
 |---|---|---|
 | `driver` | `config` | Credential driver: `config`, `database`, or `cms`. |
-| `client_id` / `client_secret` / `redirect_uri` | `env(...)` | Credentials used by the `config` driver. |
+| `mode` | `direct` | `direct` talks to Microsoft with this app's credentials. `broker` goes through an OAuth broker. See [Broker Mode](docs/broker.md). |
+| `broker.url` / `broker.site_id` / `broker.site_secret` / `broker.return_url` | `env(...)` | Broker connection settings, used when `mode` is `broker`. |
+| `client_id` / `client_secret` / `redirect_uri` | `env(...)` | Credentials used by the `config` driver. `redirect_uri` is also the fallback when the `database` / `cms` driver stores none. |
 | `tenant` | `common` | Tenant authority: `common`, `organizations`, `consumers`, a tenant GUID, or a verified domain. |
 | `prompt` | `select_account` | Passed to Microsoft's `prompt` param on initial connect. Common values: `login`, `none`, `consent`, `select_account`. |
 | `routes.redirect_after_connect` | `/` | Path or route name for a successful connect / reauthorize. |

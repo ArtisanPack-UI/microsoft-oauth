@@ -33,23 +33,38 @@ Route: `GET /auth/microsoft/connect` → `microsoft.auth.connect`, middleware `w
 
 ## Building the URL
 
-`OAuthManager::authorizationUrl()` clears any stale incremental flag from the session, then delegates to `buildAuthorizationUrl()`:
+`OAuthManager::authorizationUrl()` clears any stale incremental flag from the session, then delegates to `buildAuthorizationUrl()`. In direct mode, that generates the state and PKCE verifier and hands them to the stateless [`MicrosoftClient`](API-Reference-Microsoft-Client):
+
+```php
+$client   = $this->client();
+$state    = Str::random( 40 );
+$verifier = MicrosoftClient::generateCodeVerifier();
+
+// Build first so a misconfiguration throws before the session is touched.
+$url = $client->authorizationUrl( $state, $scopes, [ 'prompt' => $prompt ], $verifier );
+
+$this->session->put( self::SESSION_STATE, $state );
+$this->session->put( self::SESSION_VERIFIER, $verifier );
+$this->session->put( self::SESSION_USER_ID, $userId );
+```
+
+`MicrosoftClient::authorizationUrl()` assembles:
 
 ```php
 $params = [
     'client_id'             => $clientId,
     'response_type'         => 'code',
-    'redirect_uri'          => $redirect,
+    'redirect_uri'          => $redirectUri,
     'response_mode'         => 'query',
     'scope'                 => implode( ' ', $scopes ),
     'state'                 => $state,
-    'code_challenge'        => $challenge,
+    'code_challenge'        => MicrosoftClient::codeChallenge( $verifier ),
     'code_challenge_method' => 'S256',
     'prompt'                => $prompt,
 ];
-
-return $this->authorizeEndpoint() . '?' . http_build_query( $params );
 ```
+
+In [broker mode](Broker#connect) it builds a signed broker `/authorize` link instead, and stores only `state` and `user_id`.
 
 The endpoint is `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize`, where `{tenant}` is the resolved authority from `microsoft-oauth.tenant` (see [Tenants](Tenants)).
 
@@ -86,16 +101,17 @@ If the credential driver reports missing `client_id`, `authorizationUrl()` throw
 Microsoft OAuth is not configured: client_id is missing.
 ```
 
-Similarly for a missing `redirect_uri`. The controller catches these and flashes them as `microsoft.error`, redirecting to `redirect_after_error` — so the user doesn't see a 500, just your error handling.
+Similarly for a missing redirect URI (`Microsoft OAuth is not configured: microsoft-oauth.redirect_uri is missing.`). Since 1.1.0 the redirect URI comes from the credential driver when it stores one, and from `config('microsoft-oauth.redirect_uri')` otherwise. The controller catches these and flashes them as `microsoft.error`, redirecting to `redirect_after_error` — so the user doesn't see a 500, just your error handling.
 
 If you'd rather never let the user click a broken "Connect" link, gate it behind a check:
 
 ```blade
 @php
-    $config = app( \ArtisanPackUI\MicrosoftOAuth\Contracts\ConfigurationRepository::class );
+    $config      = app( \ArtisanPackUI\MicrosoftOAuth\Contracts\ConfigurationRepository::class );
+    $redirectUri = \ArtisanPackUI\MicrosoftOAuth\Facades\MicrosoftOAuth::client()->credentials()->redirectUri;
 @endphp
 
-@if( $config->isConfigured() && ! empty( config( 'microsoft-oauth.redirect_uri' ) ) )
+@if( $config->isConfigured() && ! empty( $redirectUri ) )
     <a href="{{ route('microsoft.auth.connect') }}">Connect Microsoft</a>
 @else
     <p>Microsoft integration is not configured yet.</p>

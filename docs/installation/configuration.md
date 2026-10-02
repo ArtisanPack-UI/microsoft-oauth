@@ -19,6 +19,15 @@ return [
 
     'driver' => env( 'MICROSOFT_OAUTH_DRIVER', 'config' ),
 
+    'mode' => env( 'MICROSOFT_OAUTH_MODE', 'direct' ),
+
+    'broker' => [
+        'url'         => env( 'MICROSOFT_OAUTH_BROKER_URL' ),
+        'site_id'     => env( 'MICROSOFT_OAUTH_BROKER_SITE_ID' ),
+        'site_secret' => env( 'MICROSOFT_OAUTH_BROKER_SITE_SECRET' ),
+        'return_url'  => env( 'MICROSOFT_OAUTH_BROKER_RETURN_URL' ),
+    ],
+
     'client_id'     => env( 'MICROSOFT_OAUTH_CLIENT_ID' ),
     'client_secret' => env( 'MICROSOFT_OAUTH_CLIENT_SECRET' ),
     'redirect_uri'  => env( 'MICROSOFT_OAUTH_REDIRECT_URI' ),
@@ -41,7 +50,7 @@ return [
 
 ### `driver`
 
-Which storage driver backs the app credentials (`client_id`, `client_secret`, `tenant`).
+Which storage driver backs the app credentials (`client_id`, `client_secret`, `tenant`, and optionally `redirect_uri`).
 
 - `config` (default) — reads from `.env` / `config/microsoft-oauth.php`. Read-only.
 - `database` — reads and writes `microsoft_oauth_configurations`. Client secret encrypted at rest.
@@ -51,9 +60,29 @@ The service provider re-reads this value on every `ConfigurationRepository` reso
 
 Full comparison: [Credential Drivers](Drivers).
 
+### `mode`
+
+*Added in 1.1.0.*
+
+- `direct` (default) — talk to Microsoft with this app's own client ID, secret, and tenant.
+- `broker` — run connect, callback, and refresh through an OAuth broker using the `broker` settings below. The site holds no Microsoft client secret, and the broker owns the tenant authority.
+
+Full guide: [Broker Mode](Broker).
+
+### `broker.url` / `broker.site_id` / `broker.site_secret` / `broker.return_url`
+
+*Added in 1.1.0.* Used only when `mode` is `broker`.
+
+- `url` — broker base URL. Must be HTTPS. Plain HTTP is only accepted for `localhost`, `*.localhost`, `*.test`, and loopback IPs.
+- `site_id` — this site's ID at the broker.
+- `site_secret` — this site's secret (`{id}|{plain}`), sent as the bearer token and used to sign `/authorize` links.
+- `return_url` — where the broker sends the browser back. Defaults to `route('microsoft.auth.callback')`, and must be on the URL the site registered with the broker.
+
+`url`, `site_id`, and `site_secret` can also be supplied at runtime through the `ap.microsoft.oauth.broker.credentials` filter.
+
 ### `client_id` / `client_secret` / `redirect_uri`
 
-Used by the `config` driver only. The `database` and `cms` drivers ignore these and read from their own storage.
+`client_id` and `client_secret` are used by the `config` driver only. The `database` and `cms` drivers read them from their own storage. `redirect_uri` is the fallback for every driver: the `database` and `cms` drivers use it when they have no redirect URI stored. None of these are used in broker mode.
 
 - `client_id` — the **Application (client) ID** from your Entra app registration.
 - `client_secret` — the **Value** of a client secret from **Certificates & secrets**. Optional for public clients (SPA / native); confidential (web) clients should always provide one.
@@ -88,7 +117,7 @@ Where to send the user after a successful connect or reauthorize. Value may be a
 
 ### `routes.redirect_after_error`
 
-Where to send the user when the flow fails. A `microsoft.error` flash carries the error message.
+Where to send the user when the flow fails. A `microsoft.error` flash carries the error message. In broker mode, a `microsoft.renew_url` flash may also be set when the broker reports a lapsed license with a renewal link on its own host. See [Broker Mode → License expiry](Broker#license-expiry).
 
 Read it in your redirect target:
 

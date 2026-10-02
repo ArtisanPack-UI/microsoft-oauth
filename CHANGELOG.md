@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-02
+
+Adds a broker client mode and stateless OAuth relay primitives, so a site can
+connect through an OAuth broker without holding a Microsoft client secret, and
+a broker can be built on this package. Default `direct`-mode behavior is
+unchanged.
+
 ### Added
 
 - **Stateless relay primitives** for OAuth brokers ([#24](https://github.com/ArtisanPack-UI/microsoft-oauth/issues/24)). `MicrosoftOAuth::client( ?MicrosoftCredentials )` returns a `MicrosoftClient` built from runtime credentials (client ID, optional secret, tenant, redirect URI) or the configured driver, and never touches the session or database. `authorizationUrl()` takes the caller's `state`, scopes, extra parameters (`prompt`, `login_hint`, …) and an optional PKCE verifier. `exchangeCode()` sends the requested scopes with the code, keeps the `tid` check against the tenant authority, and returns a `TokenResponse`. `refresh()` takes a raw refresh-token string plus the scopes, with no `MicrosoftConnection` required. `MicrosoftClient::verifyState()` checks the caller's state.
@@ -15,6 +22,14 @@
 
 - `OAuthManager::handleCallback()` and `TokenManager::refresh()` are now thin wrappers that run the stateless primitives and then persist to `MicrosoftConnection`. Behavior in the default `direct` mode is unchanged.
 - Refreshes now validate the configured tenant like the authorization flow does; an invalid tenant raises `TokenRefreshException` (`getError()` is `invalid_tenant`) without disconnecting the connection.
+- The `OAuthException` and `TokenRefreshException` constructors are now `( string $message = '', ?string $error = null, ?string $renewUrl = null, ?Throwable $previous = null )`. The second argument is the OAuth error code instead of an integer exception code.
+- `TokenManager` takes an optional third constructor argument (the config repository), resolved from the container when omitted.
+- A new migration adds a nullable `redirect_uri` column to `microsoft_oauth_configurations`. Run `php artisan migrate` after upgrading.
+
+### Documentation
+
+- New Broker Mode, Stateless Client, and Upgrading guides, plus API reference pages for `MicrosoftClient` / `MicrosoftCredentials`, `BrokerClient` / `BrokerCredentials`, and `TokenResponse`.
+- Updated the configuration, environment variable, driver, OAuth flow, token, tenant, exception, testing, and FAQ docs for broker mode, the driver-supplied redirect URI, and the new error codes.
 
 ## [1.0.0] - 2026-09-18
 

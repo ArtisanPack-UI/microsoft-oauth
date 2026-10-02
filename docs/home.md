@@ -14,6 +14,8 @@ Use the navigation below to explore topics. Links use the GitLab / GitHub wiki p
 - [Installation](Installation)
 - [Credential Drivers](Drivers)
 - [OAuth Flow](Oauth)
+- [Broker Mode](Broker)
+- [Stateless Client](Stateless-Client)
 - [Tenants](Tenants)
 - [Scopes](Scopes)
 - [Tokens](Tokens)
@@ -21,6 +23,7 @@ Use the navigation below to explore topics. Links use the GitLab / GitHub wiki p
 - [API Reference](API-Reference)
 - [Testing](Testing)
 - [FAQ](FAQ)
+- [Upgrading](Upgrading)
 - [Contributing](Contributing)
 
 If you're new here, start with [Getting Started](Getting-Started).
@@ -33,7 +36,9 @@ If you're new here, start with [Getting Started](Getting-Started).
 - **Encrypted token storage** on a per-user `microsoft_connections` model, with transparent refresh via the [token manager](Tokens).
 - A **scope registry** that lets any installed service package contribute the scopes it needs. Consent covers the union so users only see one screen.
 - **Tenant authority resolution** — `common` / `organizations` / `consumers` / GUID / verified domain, with `tid` enforcement on callback.
-- **Credential storage drivers** ([config, database, or CMS](Drivers)) so credentials can live wherever a project already stores its secrets.
+- **Credential storage drivers** ([config, database, or CMS](Drivers)) so credentials (including the redirect URI) can live wherever a project already stores its secrets.
+- **[Broker mode](Broker)**: run connect, callback, and refresh through an OAuth broker so the site never holds a Microsoft client secret.
+- **[Stateless OAuth primitives](Stateless-Client)** (`MicrosoftOAuth::client()`) that touch neither the session nor the database, for building brokers and custom flows.
 - A **bearer-ready HTTP client** — `MicrosoftOAuth::request( $userId )` returns a `PendingRequest` pre-configured with `Authorization: Bearer …` so downstream packages never touch OAuth internals.
 
 ## What this package does not do

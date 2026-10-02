@@ -34,6 +34,10 @@ $response = Http::withToken( $token )
 2. If the current access token is present and not close to expiring → returns it as-is.
 3. Otherwise → calls `refresh()` and returns the fresh token.
 
+## Direct vs. broker refreshes
+
+In the default `direct` mode, refreshes go straight to Microsoft through the stateless [`MicrosoftClient`](Stateless-Client). In [broker mode](Broker#refresh) they go to the broker's `/refresh` endpoint through `BrokerClient`. Everything on this page applies to both, except where noted.
+
 ## Refresh window
 
 `MicrosoftConnection::isExpired()` treats the token as expired **60 seconds before** `expires_at`:
@@ -68,8 +72,8 @@ This bypasses the expiry check and always hits the refresh endpoint. Useful in t
 `TokenManager::refresh()`:
 
 1. If no refresh token is on file, calls `$connection->markDisconnected('Missing refresh token.')` and throws `TokenRefreshException("No refresh token stored for this connection.")`.
-2. If `client_id` is missing (misconfiguration), throws `TokenRefreshException("Microsoft OAuth is not configured: client_id is missing.")` without marking the connection disconnected — the fix is in configuration, not the connection.
-3. POSTs to `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token`:
+2. If `client_id` is missing or the configured tenant isn't a valid authority (misconfiguration), throws `TokenRefreshException` (`getError()` = `invalid_client` / `invalid_tenant`) without marking the connection disconnected — the fix is in configuration, not the connection. In broker mode, incomplete broker credentials do the same with `broker_not_configured`.
+3. POSTs to `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token` (broker mode: the broker's `/api/v1/oauth/refresh` with `refresh_token` and `provider=microsoft`):
    ```
    client_id      = <from config driver>
    refresh_token  = <from connection>
@@ -78,10 +82,10 @@ This bypasses the expiry check and always hits the refresh endpoint. Useful in t
    client_secret  = <from config driver, if present>
    ```
    The `scope` parameter is required on Microsoft's v2.0 refresh — sending the connection's current scope set keeps the grant intact rather than accidentally downgrading.
-4. On non-success, extracts `error` from the response body. If it's one of the **terminal errors** (see below), marks the connection disconnected. Either way, throws `TokenRefreshException("Microsoft token refresh failed: {error}")`.
+4. On non-success, extracts `error` from the response body. If it's one of the **terminal errors** (see below), marks the connection disconnected. Either way, throws `TokenRefreshException("Microsoft token refresh failed: {error}")`, with the code available from `getError()`.
 5. On success, updates the connection:
     - `access_token`, `token_type` — always.
-    - `expires_at` — computed from `expires_in`.
+    - `expires_at` — computed from `expires_in`, when the response includes it.
     - `refresh_token` — only if the response included one. **Microsoft rotates refresh tokens on every refresh**, so this path is usually taken; the guard prevents wiping the existing one if a response is malformed.
     - `scopes` — if the response includes them.
 
@@ -96,7 +100,7 @@ Four Microsoft error codes are treated as **terminal** — the refresh token is 
 - `consent_required` — a scope requires consent that hasn't been granted.
 - `login_required` — the user's Microsoft session expired or was invalidated.
 
-On any of these, the connection is marked disconnected with reason `"Refresh token revoked or expired (:error)."`. All other errors (`invalid_client`, `unauthorized_client`, network failures) throw `TokenRefreshException` but leave the connection connected — the caller can retry after fixing the underlying issue.
+On any of these, the connection is marked disconnected with reason `"Refresh token revoked or expired (:error)."`. All other errors (`invalid_client`, `invalid_tenant`, `unauthorized_client`, `license_expired`, network failures) throw `TokenRefreshException` but leave the connection connected — the caller can retry after fixing the underlying issue.
 
 ## Failure modes
 
@@ -117,6 +121,14 @@ The manager marks the connection disconnected so subsequent calls fail loudly.
 
 The credential driver returns no `client_id`. The connection is **not** marked disconnected — this is a config problem, not a per-user problem. Fix your driver setup and retry.
 
+### `Invalid Microsoft OAuth tenant "…"`
+
+*Since 1.1.0.* The configured tenant isn't `common`, `organizations`, `consumers`, a GUID, or a verified domain. `getError()` is `invalid_tenant`, and the connection is **not** marked disconnected. Fix `MICROSOFT_OAUTH_TENANT` (or the driver's stored tenant) and retry.
+
+### `The Microsoft connection cannot be refreshed because the site license has expired.`
+
+*Broker mode only.* The broker refused the refresh with `402` / `license_expired`, and the token manager threw `LicenseExpiredException`. The connection is **not** marked disconnected, because the Microsoft grant is still valid. Send the user (or the site admin) to `$e->getRenewUrl()`. Once the license is renewed, refreshes resume without reconnecting. See [Broker Mode → License expiry](Broker#license-expiry).
+
 ### `Microsoft token refresh failed: invalid_grant`
 
 The refresh token is dead. Common causes:
@@ -135,6 +147,7 @@ Terminal errors — treated the same as `invalid_grant`. Marked disconnected, us
 ## Handling exceptions in service packages
 
 ```php
+use ArtisanPackUI\MicrosoftOAuth\Exceptions\LicenseExpiredException;
 use ArtisanPackUI\MicrosoftOAuth\Exceptions\TokenRefreshException;
 use ArtisanPackUI\MicrosoftOAuth\Exceptions\MissingConnectionException;
 use ArtisanPackUI\MicrosoftOAuth\Facades\MicrosoftOAuth;
@@ -146,6 +159,9 @@ try {
 } catch ( MissingConnectionException $e ) {
     // User has never connected — send them through /connect.
     return redirect()->route( 'microsoft.auth.connect' );
+} catch ( LicenseExpiredException $e ) {
+    // Broker mode only — the connection is fine, the license isn't.
+    return back()->with( 'renew_url', $e->getRenewUrl() );
 } catch ( TokenRefreshException $e ) {
     // Re-fetch the connection; the manager may have flipped its status.
     $connection = \ArtisanPackUI\MicrosoftOAuth\Models\MicrosoftConnection::firstWhere( 'user_id', $user->id );
@@ -160,7 +176,7 @@ try {
 }
 ```
 
-`MissingConnectionException` extends `OAuthException`, and `TokenRefreshException` is separate — catch them independently so you can render the right prompt.
+`MissingConnectionException` extends `OAuthException`, and `TokenRefreshException` is separate — catch them independently so you can render the right prompt. `LicenseExpiredException` extends `TokenRefreshException`, so catch it first.
 
 ## Concurrency
 
@@ -186,7 +202,8 @@ Http::fake( [
     ] ),
 ] );
 
-$connection = MicrosoftConnection::factory()->create( [
+$connection = MicrosoftConnection::create( [
+    'user_id'       => 1,
     'access_token'  => 'expired',
     'refresh_token' => 'old-refresh-token',
     'expires_at'    => now()->subMinute(),

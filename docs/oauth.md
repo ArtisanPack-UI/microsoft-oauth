@@ -6,7 +6,11 @@ title: OAuth Flow
 
 The package implements the **OAuth 2.0 Authorization Code flow with PKCE** against the Microsoft identity platform v2.0 endpoint. Users visit a "Connect Microsoft" link, get redirected to Microsoft's consent screen, come back to a package-owned callback, and land in your app with a persisted `MicrosoftConnection` row.
 
-This page walks through each leg. See the sub-pages for deeper coverage of specific stages.
+This page walks through each leg in the default `direct` mode. See the sub-pages for deeper coverage of specific stages.
+
+In [broker mode](Broker) (`MICROSOFT_OAUTH_MODE=broker`) the same routes run through an OAuth broker instead of talking to Microsoft directly. The flow, session handling, and persisted `MicrosoftConnection` are the same. The differences are covered on that page.
+
+Since 1.1.0, the Microsoft HTTP calls are made by the stateless [`MicrosoftClient`](Stateless-Client). `OAuthManager` wraps it with the session and persistence steps described below.
 
 ## Routes
 
@@ -62,7 +66,7 @@ The callback route deliberately does NOT require `auth` — the user is mid-redi
 `authorizationUrl()` builds the URL with:
 
 - `client_id` from the configured [credential driver](Drivers).
-- `redirect_uri` from `config('microsoft-oauth.redirect_uri')`.
+- `redirect_uri` from the credential driver when it stores one, else `config('microsoft-oauth.redirect_uri')`. See [Drivers → The redirect URI](Drivers#the-redirect-uri).
 - `response_type=code` — the authorization-code grant.
 - `response_mode=query` — Microsoft returns the code and state on the callback URL's query string.
 - `scope` = the space-separated de-duplicated union of everything the [scope registry](Scopes) returns.
@@ -80,14 +84,14 @@ Microsoft redirects back to `microsoft.auth.callback` with either `?code=…&sta
 
 `MicrosoftAuthController::callback()`:
 
-1. If `?error=…` is present, flashes the `error_description` (or `error` if description is empty) to `microsoft.error` and redirects to `redirect_after_error`.
+1. If `?error=…` is present, flashes the `error_description` (or `error` if description is empty) to `microsoft.error` and redirects to `redirect_after_error`. In broker mode, a `renew_url` on the broker's own host is also flashed as `microsoft.renew_url`.
 2. Otherwise, requires both `code` and `state` in the query — missing either flashes `"Microsoft callback is missing required code or state parameter."` and redirects.
 3. Delegates to `OAuthManager::handleCallback( $code, $state )`.
 
 `handleCallback()`:
 
 1. Pulls the stored `state`, PKCE `code_verifier`, `user_id`, and `incremental` flag from the session. Any missing state or verifier or user_id throws `OAuthException`.
-2. Compares the returned `state` against the stored one with `hash_equals()` to defeat timing attacks. Mismatch = `"OAuth state mismatch; possible CSRF attempt."`.
+2. Compares the returned `state` against the stored one in constant time (`MicrosoftClient::verifyState()`, which uses `hash_equals()`) to defeat timing attacks. Mismatch = `"OAuth state mismatch; possible CSRF attempt."`.
 3. POSTs to the token endpoint with `grant_type=authorization_code`, `code`, `code_verifier`, `client_id`, `redirect_uri`, `scope`. Confidential clients also send `client_secret`; public clients omit it.
 4. Decodes the returned `id_token`'s payload (base64url) to extract:
     - `oid` (preferred) or `sub` → `microsoft_user_id` (stable per app+user).
@@ -132,11 +136,13 @@ Wire that into whatever surface makes sense in your app (a settings page, an adm
 
 ## Exceptions
 
-The OAuth manager throws two exception types:
+The OAuth manager throws these exception types:
 
 - `ArtisanPackUI\MicrosoftOAuth\Exceptions\OAuthException` — thrown by `authorizationUrl()` when the tenant is invalid or `client_id` is missing, and by `handleCallback()` on state mismatch, missing PKCE verifier, missing user_id, `tid`-authority mismatch, or a failed code exchange.
-- `ArtisanPackUI\MicrosoftOAuth\Exceptions\TokenRefreshException` — thrown by the [token manager](Tokens) when a refresh fails. See its page for the terminal-error rules.
+- `ArtisanPackUI\MicrosoftOAuth\Exceptions\TokenRefreshException` — thrown by the [token manager](Tokens) when a refresh fails. See its page for the terminal-error rules. Its `LicenseExpiredException` subclass covers a lapsed broker license.
 - `ArtisanPackUI\MicrosoftOAuth\Exceptions\MissingConnectionException` — a subclass of `OAuthException` thrown by `DefaultTokenProvider` when a user has no `MicrosoftConnection` on file at all.
+
+Both carry the OAuth error code via `getError()` (since 1.1.0). See [Exceptions](API-Reference-Exceptions).
 
 The default controller catches `OAuthException` in `connect()`, `reauthorize()`, and `callback()` and flashes the message; other callers should handle it themselves.
 
@@ -145,6 +151,8 @@ The default controller catches `OAuthException` in `connect()`, `reauthorize()`,
 - [Connect](Oauth-Connect) — building the authorize URL, PKCE, session state, error modes.
 - [Callback](Oauth-Callback) — code exchange, id_token decoding, `tid` enforcement, concurrent-callback race handling.
 - [Reauthorize](Oauth-Reauthorize) — incremental consent details, `IncrementalConsentResult` cases, when to trigger it.
+- [Broker Mode](Broker) — the same flow through an OAuth broker.
+- [Stateless Client](Stateless-Client) — the session-free primitives underneath.
 
 ---
 Continue to [Tenants](Tenants) →

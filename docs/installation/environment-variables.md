@@ -9,9 +9,14 @@ Every env var the package reads. All are optional — the config file provides d
 | Env var | Default | Meaning |
 |---|---|---|
 | `MICROSOFT_OAUTH_DRIVER` | `config` | Credential storage driver: `config`, `database`, or `cms`. See [Drivers](Drivers). |
+| `MICROSOFT_OAUTH_MODE` | `direct` | `direct` or `broker`. See [Broker Mode](Broker). *(1.1.0)* |
+| `MICROSOFT_OAUTH_BROKER_URL` | *none* | Broker base URL. HTTPS only, except local development hosts. *(1.1.0)* |
+| `MICROSOFT_OAUTH_BROKER_SITE_ID` | *none* | This site's ID at the broker. *(1.1.0)* |
+| `MICROSOFT_OAUTH_BROKER_SITE_SECRET` | *none* | This site's broker secret (`{id}\|{plain}`). *(1.1.0)* |
+| `MICROSOFT_OAUTH_BROKER_RETURN_URL` | callback route | Where the broker returns the browser. *(1.1.0)* |
 | `MICROSOFT_OAUTH_CLIENT_ID` | *none* | Application (client) ID from your Entra app registration. Read by the `config` driver only. |
 | `MICROSOFT_OAUTH_CLIENT_SECRET` | *none* | Client secret **Value** (not the secret ID). Read by the `config` driver only. Optional for public clients. |
-| `MICROSOFT_OAUTH_REDIRECT_URI` | *none* | Full HTTPS URL of your callback route, matching an Entra-registered redirect URI exactly. |
+| `MICROSOFT_OAUTH_REDIRECT_URI` | *none* | Full HTTPS URL of your callback route, matching an Entra-registered redirect URI exactly. Used by the `config` driver, and as the fallback when the `database` / `cms` driver has none stored. |
 | `MICROSOFT_OAUTH_TENANT` | `common` | `common`, `organizations`, `consumers`, a tenant GUID, or a verified domain. See [Tenants](Tenants). |
 | `MICROSOFT_OAUTH_PROMPT` | `select_account` | Passed to Microsoft's `prompt` on the initial connect. `login`, `none`, `consent`, `select_account`. |
 | `MICROSOFT_OAUTH_REDIRECT_AFTER_CONNECT` | `/` | Path or route name for a successful connect / reauthorize. |
@@ -34,9 +39,13 @@ Must match an entry under your app registration's **Authentication → Redirect 
 
 The value here is also written back to Microsoft on the token exchange (`redirect_uri` parameter). Mismatches show up as `AADSTS50011: redirect_uri_mismatch`.
 
+### `MICROSOFT_OAUTH_BROKER_SITE_SECRET`
+
+Treat it like a client secret. It authenticates every `/token` and `/refresh` call to the broker. The package only sends it to an HTTPS broker URL (or HTTP on a local development host), and refuses to build a broker client otherwise.
+
 ### `MICROSOFT_OAUTH_TENANT`
 
-If unset, defaults to `common`. Empty string is coerced to `common` at the authority layer. Anything that isn't `common`, `organizations`, `consumers`, a GUID, or a plausible domain throws `OAuthException("Invalid Microsoft OAuth tenant \"…\". Use \"common\", \"organizations\", \"consumers\", a tenant GUID, or a verified domain.")` at authorize-URL build time.
+If unset, defaults to `common`. Empty string is coerced to `common` at the authority layer. Anything that isn't `common`, `organizations`, `consumers`, a GUID, or a plausible domain throws `OAuthException("Invalid Microsoft OAuth tenant \"…\". Use \"common\", \"organizations\", \"consumers\", a tenant GUID, or a verified domain.")` at authorize-URL build time, and (since 1.1.0) `TokenRefreshException` with `getError()` = `invalid_tenant` at refresh time.
 
 ### `MICROSOFT_OAUTH_PROMPT`
 

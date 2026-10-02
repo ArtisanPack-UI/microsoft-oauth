@@ -17,7 +17,7 @@ public function callback( Request $request ): RedirectResponse
         $description = $this->stringQuery( $request, 'error_description' );
         $message     = '' !== $description ? $description : $error;
 
-        return $this->redirectAfterError()->with( 'microsoft.error', $message );
+        return $this->redirectWithError( $message, $this->stringQuery( $request, 'renew_url' ) );
     }
 
     $code  = $this->stringQuery( $request, 'code' );
@@ -33,7 +33,7 @@ public function callback( Request $request ): RedirectResponse
     try {
         $this->oauth->handleCallback( $code, $state );
     } catch ( OAuthException $e ) {
-        return $this->redirectAfterError()->with( 'microsoft.error', $e->getMessage() );
+        return $this->redirectWithError( $e->getMessage(), (string) $e->getRenewUrl() );
     }
 
     return $this->redirectAfterConnect()->with( 'microsoft.status', 'connected' );
@@ -43,6 +43,8 @@ public function callback( Request $request ): RedirectResponse
 Route: `GET /auth/microsoft/callback` → `microsoft.auth.callback`, middleware `web` (no `auth` — the user is mid-redirect and may not still have a session cookie in every configuration; the `state` value proves same-browser).
 
 `stringQuery()` guards against `?code[]=x` array shapes that would otherwise stringify to "Array" and defeat the equality checks.
+
+`redirectWithError()` (since 1.1.0) flashes `microsoft.error` and redirects to `redirect_after_error`. In [broker mode](Broker#renew_url-on-the-callback) it also flashes `microsoft.renew_url`, but only when `OAuthManager::isTrustedRenewUrl()` confirms the URL is on the broker's own host over HTTPS. Outside broker mode, a `renew_url` query parameter is ignored.
 
 ## Error responses from Microsoft
 
@@ -83,12 +85,10 @@ All four values are `pull()`ed — read and deleted in one step. This prevents r
 ### 2. Validate state (CSRF defense)
 
 ```php
-if ( empty( $storedState ) || ! hash_equals( (string) $storedState, $returnedState ) ) {
-    throw new OAuthException( __( 'OAuth state mismatch; possible CSRF attempt.' ) );
-}
+MicrosoftClient::verifyState( empty( $storedState ) ? null : (string) $storedState, $returnedState );
 ```
 
-`hash_equals()` runs in constant time to prevent timing attacks. A mismatch here almost always means either:
+`verifyState()` throws `OAuthException("OAuth state mismatch; possible CSRF attempt.")` when the stored state is empty or differs. It compares with `hash_equals()`, which runs in constant time to prevent timing attacks. A mismatch here almost always means either:
 
 - The session was lost between `/connect` and `/callback` (bad session driver, cookie samesite, cookie domain).
 - A stale callback URL is being replayed.
@@ -97,7 +97,7 @@ if ( empty( $storedState ) || ! hash_equals( (string) $storedState, $returnedSta
 ### 3. Validate PKCE verifier and user context
 
 ```php
-if ( empty( $verifier ) ) {
+if ( ! $usesBroker && empty( $verifier ) ) {
     throw new OAuthException( __( 'PKCE code verifier missing from session.' ) );
 }
 
@@ -106,44 +106,47 @@ if ( empty( $userId ) ) {
 }
 ```
 
-Both mean the session state that `authorizationUrl()` wrote is gone. Same debugging story as state mismatch above.
+Both mean the session state that `authorizationUrl()` wrote is gone. Same debugging story as state mismatch above. In broker mode there is no verifier, because the broker runs PKCE with Microsoft itself.
 
 ### 4. Exchange the code
 
 ```php
-$body = [
-    'client_id'     => $this->requireClientId(),
-    'redirect_uri'  => $this->requireConfig( 'microsoft-oauth.redirect_uri' ),
+$tokens = $usesBroker
+    ? $this->brokerClient()->exchangeCode( $code )
+    : $this->client()->exchangeCode( $code, $this->mergeScopes( [] ), (string) $verifier );
+```
+
+In direct mode, [`MicrosoftClient::exchangeCode()`](API-Reference-Microsoft-Client) posts:
+
+```php
+$form = [
+    'client_id'     => $clientId,
+    'redirect_uri'  => $redirectUri,
     'grant_type'    => 'authorization_code',
     'code'          => $code,
-    'code_verifier' => (string) $verifier,
-    'scope'         => implode( ' ', $this->mergeScopes( [] ) ),
+    'scope'         => implode( ' ', $scopes ),
+    'code_verifier' => $verifier,
 ];
 
 // Confidential clients only:
-if ( '' !== $secret ) {
-    $body[ 'client_secret' ] = $secret;
-}
-
-$response = $this->http->asForm()->post( $this->tokenEndpoint(), $body );
+$form[ 'client_secret' ] = $clientSecret;
 ```
+
+Both return a [`TokenResponse`](API-Reference-Token-Response). Steps 5 and 6 below describe the direct path. In broker mode the broker has already done them, and its response reports the account email and name directly.
 
 The endpoint is `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token`.
 
 `client_secret` is only sent when the credential driver returns a non-empty value — public clients (SPA / native) legitimately have no secret and PKCE alone is enough proof-of-possession.
 
-Non-2xx responses throw `OAuthException("Microsoft code exchange failed: {error}")` — the error string is Microsoft's `error_description` if present, otherwise `error`, otherwise `exchange_failed`.
+Non-2xx responses throw `OAuthException("Microsoft code exchange failed: {error}")` — the error string is Microsoft's `error_description` if present, otherwise `error`, otherwise `exchange_failed`. `getError()` returns the code itself. A 2xx response without an `access_token` throws `"Microsoft code exchange returned an invalid payload."` (`invalid_payload`).
 
 ### 5. Decode the id_token
 
-```php
-[ $microsoftUserId, $email, $tid ] = $this->extractIdentity( $payload[ 'id_token' ] ?? null );
-```
-
-Three claims are extracted:
+`TokenResponse::fromMicrosoft()` decodes the id_token payload into `accountId`, `accountEmail`, `accountName`, and `tenantId`. The claims used:
 
 - **`oid` (preferred) or `sub`** — the stable Microsoft user identifier. `oid` is stable across tenants for a work/school account; `sub` is stable per app+user for personal accounts. Stored as `microsoft_user_id` on the connection.
 - **`email` (preferred) or `preferred_username`** — the user's identifier for display. `email` is the actual email address when Microsoft has one; `preferred_username` is the UPN / email-shaped identifier from the account and is present even when `email` isn't.
+- **`name`** — the display name (exposed as `TokenResponse::$accountName`; not stored on the connection).
 - **`tid`** — the tenant id that issued the token. Used both for the tenant-authority check below and for downstream code that needs to route per-tenant.
 
 **The JWT signature is not verified.** The id_token arrived over TLS from Microsoft's token endpoint on a connection we initiated. We use these claims for identity **persistence only** — labeling the row so we can display "Connected as {email}" and later route per-tenant. We do not use them for authorization decisions, so signature validation would be pointless overhead.
@@ -153,8 +156,10 @@ If your use case actually authorizes off the id_token (logging users into your a
 ### 6. Enforce the tenant authority
 
 ```php
-$this->authority()->assertTidMatches( $tid );
+$this->authority()->assertTidMatches( $tokens->tenantId );
 ```
+
+This runs inside `MicrosoftClient::exchangeCode()`, so stateless callers get the same check.
 
 This is the security-critical check specific to Microsoft. See [Tenants](Tenants) for the per-mode rules — but in short:
 
@@ -171,7 +176,7 @@ A mismatch throws `OAuthException` and the connection is not persisted.
 ```php
 $connection = MicrosoftConnection::firstOrNew( [ 'user_id' => $userId ] );
 
-$this->applyTokens( $connection, $microsoftUserId, $email, $tid, $payload, $scopes, $expiresAt, $incremental );
+$this->applyTokens( $connection, $tokens, $incremental );
 
 try {
     $connection->save();
@@ -181,7 +186,7 @@ try {
     }
 
     $connection = MicrosoftConnection::where( 'user_id', $userId )->firstOrFail();
-    $this->applyTokens( $connection, $microsoftUserId, $email, $tid, $payload, $scopes, $expiresAt, $incremental );
+    $this->applyTokens( $connection, $tokens, $incremental );
     $connection->save();
 }
 ```
@@ -193,18 +198,18 @@ The duplicate-key detection is driver-aware — Postgres reports SQLSTATE `23505
 ### 8. Apply the payload
 
 ```php
-$connection->microsoft_user_id = $microsoftUserId ?? $connection->microsoft_user_id;
-$connection->email             = $email ?? $connection->email;
-$connection->tid               = $tid ?? $connection->tid;
-$connection->access_token      = (string) $payload[ 'access_token' ];
-$connection->token_type        = (string) ( $payload[ 'token_type' ] ?? 'Bearer' );
+$connection->microsoft_user_id = $tokens->accountId ?? $connection->microsoft_user_id;
+$connection->email             = $tokens->accountEmail ?? $connection->email;
+$connection->tid               = $tokens->tenantId ?? $connection->tid;
+$connection->access_token      = $tokens->accessToken;
+$connection->token_type        = $tokens->tokenType;
 $connection->scopes            = $scopes;
-$connection->expires_at        = $expiresAt;
+$connection->expires_at        = $tokens->expiresAt;
 $connection->status            = MicrosoftConnection::STATUS_CONNECTED;
 $connection->disconnect_reason = null;
 
-if ( ! empty( $payload[ 'refresh_token' ] ) ) {
-    $connection->refresh_token = (string) $payload[ 'refresh_token' ];
+if ( null !== $tokens->refreshToken ) {
+    $connection->refresh_token = $tokens->refreshToken;
 }
 ```
 
@@ -213,6 +218,7 @@ Notes:
 - **`microsoft_user_id`, `email`, `tid` are never wiped**. If the exchange somehow doesn't return them, the existing stored values are kept. Prevents a re-consent flow from clearing identifying info.
 - **`refresh_token` is only overwritten when present**. Microsoft returns one on every successful exchange when `offline_access` is granted — the guard is defensive for edge cases like an unexpected exchange response shape.
 - **`disconnect_reason` is nulled on every successful exchange**. A previously-disconnected connection that reconnects starts clean.
+- **`$scopes`** is the scope list the token response reported. When it reported none, direct mode stores the requested scopes, and broker mode keeps the connection's existing scopes.
 - **On incremental consent (`$incremental === true`)**, the returned scopes are unioned with the previously-recorded ones before being stored. Microsoft's token response reflects only the scopes granted in *this* exchange, but the user's consent is cumulative — see the union logic in `applyTokens()`.
 
 ## After the exchange

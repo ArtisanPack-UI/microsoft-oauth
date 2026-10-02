@@ -39,7 +39,7 @@ Installed automatically by Composer when you `require artisanpack-ui/microsoft-o
 
 - **A relational database** with support for `text` / `longText` columns and a unique index. MySQL, PostgreSQL, SQLite, and SQL Server all work.
 
-The package creates two tables via published migrations — `microsoft_connections` (per-user) and `microsoft_oauth_configurations` (singleton, only used by the `database` driver).
+The package creates two tables via published migrations — `microsoft_connections` (per-user) and `microsoft_oauth_configurations` (singleton, only used by the `database` driver). A third migration (1.1.0) adds the nullable `redirect_uri` column to `microsoft_oauth_configurations`.
 
 ## Entra / Azure AD
 

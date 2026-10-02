@@ -31,8 +31,13 @@ Depends on your setup:
 - **Single-tenant**, credentials rotate with deploys → `config` driver, `.env`.
 - **Multi-tenant** or credentials managed via an admin UI → `database` driver. Secret is encrypted with `APP_KEY`.
 - **CMS-driven** projects → `cms` driver. Same encryption story, secret lives with every other CMS setting.
+- **Nowhere** → [broker mode](Broker). The broker holds the Microsoft client secret, and the site only holds its broker site secret.
 
 See [Credential Drivers](Drivers) for the full comparison.
+
+### Can the redirect URI live with the other credentials?
+
+Yes, since 1.1.0. The `database` driver has a `redirect_uri` column and the `cms` driver an `artisanpack_microsoft_oauth_redirect_uri` setting. Pass `'redirect_uri'` to `save()`. When nothing is stored, `MICROSOFT_OAUTH_REDIRECT_URI` is used. See [Drivers → The redirect URI](Drivers#the-redirect-uri).
 
 ### What happens when I rotate `APP_KEY`?
 
@@ -56,6 +61,28 @@ $this->app->scoped( DatabaseDriver::class, function ( Application $app ): Databa
 Every tenant then gets its own `microsoft_oauth_configurations` row on its own database connection.
 
 Alternatively, write a custom `ConfigurationRepository` that reads from wherever your tenant-scoped secrets live — see [Configuration Repository](API-Reference-Configuration-Repository).
+
+## Broker mode
+
+### When should I use broker mode?
+
+When the sites running your code shouldn't each register their own Entra app or hold a Microsoft client secret, such as a distributed plugin or a white-label product. A central broker owns the Entra registration, and each site authenticates to it with a site ID and secret. See [Broker Mode](Broker).
+
+### Does broker mode change how downstream packages get tokens?
+
+No. Connections are stored in `microsoft_connections` as usual, and `MicrosoftOAuth::request()`, the `TokenProvider` contract, and `TokenManager` work the same way. Only where the code exchange and refresh go changes.
+
+### A refresh threw `LicenseExpiredException`. Is the connection broken?
+
+No. The broker refused the refresh because the site's license lapsed. The connection stays connected, and once the license is renewed (`$e->getRenewUrl()`), refreshes resume without the user reconnecting.
+
+### Why wasn't `microsoft.renew_url` flashed after the callback?
+
+The callback only flashes a `renew_url` that's on the configured broker host over HTTPS, in broker mode. Anyone can put a `renew_url` on a callback URL, so links to any other host are dropped. See [Broker Mode → `renew_url` on the callback](Broker#renew_url-on-the-callback).
+
+### How do I build a broker with this package?
+
+Use the [stateless client](Stateless-Client). `MicrosoftOAuth::client( new MicrosoftCredentials( … ) )` gives you consent URLs, code exchange, and refresh without touching the session or database, and `TokenResponse::toArray()` returns the JSON shape broker clients expect.
 
 ## OAuth flow
 

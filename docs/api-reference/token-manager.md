@@ -16,8 +16,11 @@ Container-resolved, `scoped()` binding:
 public function __construct(
     protected ConfigurationRepository $credentials,
     protected HttpFactory $http,
+    protected ?ConfigRepository $config = null,
 ) {}
 ```
+
+`$config` (added in 1.1.0) is the Laravel config repository, used for the redirect URI fallback and to detect [broker mode](Broker). It's resolved from the container when omitted, so 1.0-style construction keeps working.
 
 ## Methods
 
@@ -46,12 +49,13 @@ Force a refresh regardless of expiry. Use in tests or when reacting to a `401 Un
 Under the hood:
 
 1. No refresh token → mark connection disconnected (`"Missing refresh token."`), throw `TokenRefreshException`.
-2. Missing `client_id` → throw `TokenRefreshException` (connection **not** marked disconnected — this is a config issue).
-3. POST to `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token` with `grant_type=refresh_token`, `client_id`, `refresh_token`, `scope`, and (for confidential clients) `client_secret`.
-4. On non-2xx:
-    - If the error is one of the terminal errors (`invalid_grant`, `interaction_required`, `consent_required`, `login_required`) → mark disconnected (`"Refresh token revoked or expired (:error)."`).
-    - Throw `TokenRefreshException("Microsoft token refresh failed: :error")`.
-5. On success → update `access_token`, `token_type`, `expires_at`, and (when returned) `refresh_token` and `scopes`. Save the connection. Return the fresh access token.
+2. Redeem the refresh token:
+    - **Direct mode:** `MicrosoftClient::refresh( $refreshToken, $connection->grantedScopes() )`, which POSTs to `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token` with `grant_type=refresh_token`, `client_id`, `refresh_token`, `scope`, and (for confidential clients) `client_secret`. A missing `client_id` (`invalid_client`) or an invalid tenant (`invalid_tenant`) throws before any request, and the connection is **not** marked disconnected, since this is a config issue.
+    - **Broker mode:** `BrokerClient::refresh( $refreshToken )`, which POSTs to the broker's `/api/v1/oauth/refresh`. Incomplete broker credentials throw with `getError()` = `broker_not_configured`, connection left connected.
+3. On failure:
+    - If `getError()` is one of the terminal errors (`invalid_grant`, `interaction_required`, `consent_required`, `login_required`) → mark disconnected (`"Refresh token revoked or expired (:error)."`).
+    - Rethrow the `TokenRefreshException` (or `LicenseExpiredException`).
+4. On success → update `access_token`, `token_type`, and (when returned) `expires_at`, `refresh_token`, and `scopes`. Save the connection. Return the fresh access token.
 
 **Params:**
 
@@ -59,7 +63,8 @@ Under the hood:
 
 **Throws:**
 
-- `TokenRefreshException` — refresh failed for any reason.
+- `LicenseExpiredException` — broker mode only: the site license has lapsed. The connection stays connected. See [Broker Mode](Broker#license-expiry).
+- `TokenRefreshException` — refresh failed for any other reason. `getError()` carries the error code.
 
 ## Terminal errors
 
@@ -72,19 +77,19 @@ protected const TERMINAL_REFRESH_ERRORS = [
 ];
 ```
 
-These are the Microsoft error codes that indicate the refresh token is no longer usable and the user must reconnect. Anything else is treated as a transient failure — the manager throws but leaves the connection intact.
+These are the Microsoft error codes that indicate the refresh token is no longer usable and the user must reconnect. Anything else (including `license_expired`) is treated as a non-terminal failure — the manager throws but leaves the connection intact.
 
 ## Refresh-token rotation
 
 Microsoft rotates the refresh token on every successful refresh. The manager always overwrites the stored `refresh_token` when a new one is returned:
 
 ```php
-if ( ! empty( $payload[ 'refresh_token' ] ) ) {
-    $connection->refresh_token = (string) $payload[ 'refresh_token' ];
+if ( null !== $tokens->refreshToken ) {
+    $connection->refresh_token = $tokens->refreshToken;
 }
 ```
 
-The guard against an empty value is defensive — Microsoft normally always returns one on refresh, but the check prevents a malformed response from wiping the stored token.
+`TokenResponse::refreshToken` falls back to the token that was redeemed when the response carries none, so a malformed response can't wipe the stored token.
 
 ## Endpoint
 
@@ -92,7 +97,9 @@ The guard against an empty value is defensive — Microsoft normally always retu
 https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token
 ```
 
-Where `{tenant}` is `microsoft-oauth.tenant` (defaults to `common`). The refresh endpoint doesn't strictly need the tenant-scoped authority since the refresh token itself is tenant-bound, but sending the configured tenant matches the initial exchange and avoids any silent-fallback behavior.
+Where `{tenant}` is the resolved authority for `microsoft-oauth.tenant` (defaults to `common`). The refresh endpoint doesn't strictly need the tenant-scoped authority since the refresh token itself is tenant-bound, but sending the configured tenant matches the initial exchange and avoids any silent-fallback behavior. Since 1.1.0 the tenant is validated first, the same way the authorization flow does it.
+
+In broker mode the endpoint is `{broker.url}/api/v1/oauth/refresh`.
 
 ## Distinct from `DefaultTokenProvider`
 

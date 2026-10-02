@@ -27,6 +27,8 @@ The keys map directly to `config/microsoft-oauth.php`:
 
 You can also set these values directly in the config file if you'd rather commit them (obviously don't commit the client secret).
 
+`ConfigDriver::getRedirectUri()` (from the `ProvidesRedirectUri` contract, added in 1.1.0) returns `microsoft-oauth.redirect_uri`, so the redirect URI comes from the same place as the rest of the credentials.
+
 ## Read-only
 
 The `config` driver is read-only. Calling `save([...])` throws a `RuntimeException`:
