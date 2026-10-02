@@ -51,6 +51,15 @@ interface ConfigurationRepository
     public function getTenant(): ?string;
 
     /**
+     * Get the redirect URI registered with the Entra app.
+     *
+     * Return null to fall back to `config('microsoft-oauth.redirect_uri')`.
+     *
+     * @since 1.1.0
+     */
+    public function getRedirectUri(): ?string;
+
+    /**
      * Persist a full credential set.
      *
      * Drivers that are read-only (like the config driver) may throw
@@ -58,7 +67,7 @@ interface ConfigurationRepository
      *
      * @since 1.0.0
      *
-     * @param  array<string, string|null>  $credentials  Keys: client_id, client_secret, tenant.
+     * @param  array<string, string|null>  $credentials  Keys: client_id, client_secret, tenant, and (optionally) redirect_uri.
      */
     public function save( array $credentials ): void;
 

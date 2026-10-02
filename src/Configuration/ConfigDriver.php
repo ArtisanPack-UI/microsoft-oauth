@@ -45,6 +45,14 @@ class ConfigDriver implements ConfigurationRepository
         return $this->stringOrNull( $this->config->get( 'microsoft-oauth.tenant' ) );
     }
 
+    /**
+     * @since 1.1.0
+     */
+    public function getRedirectUri(): ?string
+    {
+        return $this->stringOrNull( $this->config->get( 'microsoft-oauth.redirect_uri' ) );
+    }
+
     public function save( array $credentials ): void
     {
         throw new RuntimeException(

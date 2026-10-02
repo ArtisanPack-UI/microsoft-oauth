@@ -16,7 +16,13 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\MicrosoftOAuth;
 
+use ArtisanPackUI\MicrosoftOAuth\Broker\BrokerClient;
+use ArtisanPackUI\MicrosoftOAuth\Broker\BrokerCredentials;
+use ArtisanPackUI\MicrosoftOAuth\OAuth\MicrosoftClient;
+use ArtisanPackUI\MicrosoftOAuth\OAuth\MicrosoftCredentials;
 use ArtisanPackUI\MicrosoftOAuth\OAuth\MicrosoftOAuthManager;
+use ArtisanPackUI\MicrosoftOAuth\OAuth\OAuthManager;
+use Illuminate\Http\Client\Factory as HttpFactory;
 use Illuminate\Http\Client\PendingRequest;
 
 /**
@@ -54,5 +60,45 @@ class MicrosoftOAuth
         // underlying credential row changes. A cached reference here would
         // pin a stale manager past the scoped rebuild.
         return app( MicrosoftOAuthManager::class )->request( $userId );
+    }
+
+    /**
+     * A stateless Microsoft identity platform client.
+     *
+     * With no arguments it uses the configured credential driver. Pass
+     * explicit credentials to relay for another app, as an OAuth broker
+     * does; the client never touches the session or the database.
+     *
+     * @since 1.1.0
+     */
+    public function client( ?MicrosoftCredentials $credentials = null ): MicrosoftClient
+    {
+        return app( OAuthManager::class )->client( $credentials );
+    }
+
+    /**
+     * A client for the OAuth broker, from explicit or configured credentials.
+     *
+     * @since 1.1.0
+     *
+     * @throws Exceptions\OAuthException When no credentials are passed and none are configured.
+     */
+    public function broker( ?BrokerCredentials $credentials = null ): BrokerClient
+    {
+        if ( null !== $credentials ) {
+            return new BrokerClient( $credentials, app( HttpFactory::class ) );
+        }
+
+        return app( OAuthManager::class )->brokerClient();
+    }
+
+    /**
+     * Whether the package is in broker client mode (`microsoft-oauth.mode` = `broker`).
+     *
+     * @since 1.1.0
+     */
+    public function usesBroker(): bool
+    {
+        return app( OAuthManager::class )->usesBroker();
     }
 }

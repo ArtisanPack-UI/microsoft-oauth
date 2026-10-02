@@ -13,6 +13,7 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\MicrosoftOAuth\Exceptions;
 
+use ArtisanPackUI\MicrosoftOAuth\Exceptions\Concerns\CarriesOAuthError;
 use RuntimeException;
 
 /**
@@ -22,4 +23,5 @@ use RuntimeException;
  */
 class OAuthException extends RuntimeException
 {
+    use CarriesOAuthError;
 }

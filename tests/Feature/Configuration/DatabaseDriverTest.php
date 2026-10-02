@@ -4,6 +4,7 @@ declare( strict_types=1 );
 
 use ArtisanPackUI\MicrosoftOAuth\Configuration\DatabaseDriver;
 use ArtisanPackUI\MicrosoftOAuth\Contracts\ConfigurationRepository;
+use ArtisanPackUI\MicrosoftOAuth\OAuth\OAuthManager;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -144,4 +145,59 @@ it( 'returns a null client_secret and logs when the stored ciphertext cannot be 
     Log::shouldHaveReceived( 'warning' )->once()->withArgs( function ( string $message ): bool {
         return str_contains( $message, 'failed to decrypt' );
     } );
+} );
+
+it( 'stores the redirect URI when one is passed', function (): void {
+    /** @var DatabaseDriver $driver */
+    $driver = app( ConfigurationRepository::class );
+
+    $driver->save( [
+        'client_id'    => 'app-1',
+        'tenant'       => 'common',
+        'redirect_uri' => 'https://db.test/auth/microsoft/callback',
+    ] );
+
+    expect( $driver->getRedirectUri() )->toBe( 'https://db.test/auth/microsoft/callback' );
+} );
+
+it( 'keeps the stored redirect URI when a save omits the key', function (): void {
+    /** @var DatabaseDriver $driver */
+    $driver = app( ConfigurationRepository::class );
+
+    $driver->save( [ 'client_id' => 'app-1', 'tenant' => 'common', 'redirect_uri' => 'https://db.test/cb' ] );
+    $driver->save( [ 'client_id' => 'app-2', 'tenant' => 'common' ] );
+
+    expect( $driver->getClientId() )->toBe( 'app-2' );
+    expect( $driver->getRedirectUri() )->toBe( 'https://db.test/cb' );
+} );
+
+it( 'clears the redirect URI when an empty one is passed', function (): void {
+    /** @var DatabaseDriver $driver */
+    $driver = app( ConfigurationRepository::class );
+
+    $driver->save( [ 'client_id' => 'app-1', 'tenant' => 'common', 'redirect_uri' => 'https://db.test/cb' ] );
+    $driver->save( [ 'client_id' => 'app-1', 'tenant' => 'common', 'redirect_uri' => '' ] );
+
+    expect( $driver->getRedirectUri() )->toBeNull();
+} );
+
+it( 'uses the stored redirect URI for the OAuth flow, falling back to config', function (): void {
+    config()->set( 'microsoft-oauth.redirect_uri', 'https://config.test/cb' );
+
+    /** @var DatabaseDriver $driver */
+    $driver = app( ConfigurationRepository::class );
+    $driver->save( [ 'client_id' => 'app-1', 'tenant' => 'common' ] );
+
+    $redirectFor = static function (): string {
+        parse_str( parse_url( app( OAuthManager::class )->authorizationUrl( 1 ), PHP_URL_QUERY ), $query );
+
+        return $query['redirect_uri'];
+    };
+
+    expect( $redirectFor() )->toBe( 'https://config.test/cb' );
+
+    $driver->save( [ 'client_id' => 'app-1', 'tenant' => 'common', 'redirect_uri' => 'https://db.test/cb' ] );
+    app()->forgetScopedInstances();
+
+    expect( $redirectFor() )->toBe( 'https://db.test/cb' );
 } );

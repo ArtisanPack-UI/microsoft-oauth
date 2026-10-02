@@ -37,6 +37,8 @@ class CmsSettingsDriver implements ConfigurationRepository
 
     public const KEY_TENANT        = 'artisanpack_microsoft_oauth_tenant';
 
+    public const KEY_REDIRECT_URI  = 'artisanpack_microsoft_oauth_redirect_uri';
+
     /**
      * @var array<string, string|null>|null
      */
@@ -72,6 +74,14 @@ class CmsSettingsDriver implements ConfigurationRepository
         return $this->load()[ 'tenant' ] ?? null;
     }
 
+    /**
+     * @since 1.1.0
+     */
+    public function getRedirectUri(): ?string
+    {
+        return $this->load()[ 'redirect_uri' ] ?? null;
+    }
+
     public function save( array $credentials ): void
     {
         // Pass plaintext through. Encryption for the client_secret key is
@@ -82,6 +92,12 @@ class CmsSettingsDriver implements ConfigurationRepository
         apUpdateSetting( self::KEY_CLIENT_ID, $credentials[ 'client_id' ] ?? null );
         apUpdateSetting( self::KEY_CLIENT_SECRET, $credentials[ 'client_secret' ] ?? null );
         apUpdateSetting( self::KEY_TENANT, $credentials[ 'tenant' ] ?? null );
+
+        // Only touch the redirect URI when the caller passes it, so 1.0
+        // callers keep the stored value without knowing the key.
+        if ( array_key_exists( 'redirect_uri', $credentials ) ) {
+            apUpdateSetting( self::KEY_REDIRECT_URI, $credentials[ 'redirect_uri' ] );
+        }
 
         $this->cache               = null;
         $this->secretDecryptFailed = false;
@@ -125,6 +141,7 @@ class CmsSettingsDriver implements ConfigurationRepository
         $clientId     = apGetSetting( self::KEY_CLIENT_ID );
         $secretCipher = apGetSetting( self::KEY_CLIENT_SECRET );
         $tenant       = apGetSetting( self::KEY_TENANT );
+        $redirectUri  = apGetSetting( self::KEY_REDIRECT_URI );
 
         $secret                    = null;
         $this->secretDecryptFailed = false;
@@ -145,6 +162,7 @@ class CmsSettingsDriver implements ConfigurationRepository
             'client_id'     => null === $clientId ? null : (string) $clientId,
             'client_secret' => $secret,
             'tenant'        => null === $tenant ? null : (string) $tenant,
+            'redirect_uri'  => null === $redirectUri || '' === $redirectUri ? null : (string) $redirectUri,
         ];
     }
 }

@@ -146,3 +146,27 @@ it( 'encrypts secrets written directly through apUpdateSetting (Settings UI path
     expect( $driver->getClientSecret() )->toBe( 'ui-typed-secret' );
     expect( $driver->isConfigured() )->toBeTrue();
 } );
+
+it( 'stores and reads the redirect URI through the CMS settings', function (): void {
+    /** @var CmsSettingsDriver $driver */
+    $driver = app( CmsSettingsDriver::class );
+
+    $driver->save( [
+        'client_id'    => 'cid',
+        'tenant'       => 'common',
+        'redirect_uri' => ' https://cms.test/auth/microsoft/callback ',
+    ] );
+    $driver->flush();
+
+    expect( $driver->getRedirectUri() )->toBe( 'https://cms.test/auth/microsoft/callback' );
+
+    // A save without the key leaves the stored value alone.
+    $driver->save( [ 'client_id' => 'cid-2', 'tenant' => 'common' ] );
+    $driver->flush();
+
+    expect( $driver->getRedirectUri() )->toBe( 'https://cms.test/auth/microsoft/callback' );
+} );
+
+it( 'reports no redirect URI when none is stored', function (): void {
+    expect( app( CmsSettingsDriver::class )->getRedirectUri() )->toBeNull();
+} );
