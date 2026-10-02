@@ -14,6 +14,7 @@ declare( strict_types=1 );
 namespace ArtisanPackUI\MicrosoftOAuth\Configuration;
 
 use ArtisanPackUI\MicrosoftOAuth\Contracts\ConfigurationRepository;
+use ArtisanPackUI\MicrosoftOAuth\Contracts\ProvidesRedirectUri;
 use Illuminate\Contracts\Encryption\Encrypter;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Support\Facades\Log;
@@ -27,7 +28,7 @@ use Throwable;
  *
  * @since 1.0.0
  */
-class DatabaseDriver implements ConfigurationRepository
+class DatabaseDriver implements ConfigurationRepository, ProvidesRedirectUri
 {
 
     /**
@@ -66,30 +67,43 @@ class DatabaseDriver implements ConfigurationRepository
         return $this->load()[ 'tenant' ] ?? null;
     }
 
+    /**
+     * @since 1.1.0
+     */
+    public function getRedirectUri(): ?string
+    {
+        return $this->load()[ 'redirect_uri' ] ?? null;
+    }
+
     public function save( array $credentials ): void
     {
         $now = now();
+
+        $row = [
+            'singleton_key' => self::SINGLETON_KEY,
+            'client_id'     => $credentials[ 'client_id' ] ?? null,
+            'client_secret' => isset( $credentials[ 'client_secret' ] ) && '' !== $credentials[ 'client_secret' ]
+                ? $this->encrypter->encryptString( (string) $credentials[ 'client_secret' ] )
+                : null,
+            'tenant'        => $credentials[ 'tenant' ] ?? null,
+            'created_at'    => $now,
+            'updated_at'    => $now,
+        ];
+
+        $update = [ 'client_id', 'client_secret', 'tenant', 'updated_at' ];
+
+        // Only touch `redirect_uri` when the caller passes it, so 1.0 callers
+        // keep working (and keep the stored value) without knowing the key.
+        if ( array_key_exists( 'redirect_uri', $credentials ) ) {
+            $row[ 'redirect_uri' ] = $this->stringOrNull( $credentials[ 'redirect_uri' ] );
+            $update[]              = 'redirect_uri';
+        }
 
         // Atomic upsert against the unique `singleton_key`. Compiles to a
         // single INSERT … ON CONFLICT / ON DUPLICATE KEY UPDATE, so two
         // concurrent initial saves cannot race in a duplicate row, and
         // `created_at` is preserved across updates.
-        $this->connection->table( $this->table )->upsert(
-            [
-                [
-                    'singleton_key' => self::SINGLETON_KEY,
-                    'client_id'     => $credentials[ 'client_id' ] ?? null,
-                    'client_secret' => isset( $credentials[ 'client_secret' ] ) && '' !== $credentials[ 'client_secret' ]
-                        ? $this->encrypter->encryptString( (string) $credentials[ 'client_secret' ] )
-                        : null,
-                    'tenant'        => $credentials[ 'tenant' ] ?? null,
-                    'created_at'    => $now,
-                    'updated_at'    => $now,
-                ],
-            ],
-            [ 'singleton_key' ],
-            [ 'client_id', 'client_secret', 'tenant', 'updated_at' ],
-        );
+        $this->connection->table( $this->table )->upsert( [ $row ], [ 'singleton_key' ], $update );
 
         $this->cache = null;
     }
@@ -134,6 +148,23 @@ class DatabaseDriver implements ConfigurationRepository
             'client_id'     => $row->client_id ?? null,
             'client_secret' => $secret,
             'tenant'        => $row->tenant ?? null,
+            'redirect_uri'  => $this->stringOrNull( $row->redirect_uri ?? null ),
         ];
+    }
+
+    /**
+     * Normalize a stored or submitted value to a trimmed string, or null.
+     *
+     * @since 1.1.0
+     */
+    protected function stringOrNull( mixed $value ): ?string
+    {
+        if ( null === $value ) {
+            return null;
+        }
+
+        $string = trim( (string) $value );
+
+        return '' === $string ? null : $string;
     }
 }

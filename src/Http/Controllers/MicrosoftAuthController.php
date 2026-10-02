@@ -96,7 +96,8 @@ class MicrosoftAuthController extends Controller
     }
 
     /**
-     * Handle the OAuth callback from Microsoft.
+     * Handle the OAuth callback from Microsoft (or, in broker mode, the
+     * return from the broker).
      *
      * @since 1.0.0
      */
@@ -108,7 +109,7 @@ class MicrosoftAuthController extends Controller
             $description = $this->stringQuery( $request, 'error_description' );
             $message     = '' !== $description ? $description : $error;
 
-            return $this->redirectAfterError()->with( 'microsoft.error', $message );
+            return $this->redirectWithError( $message, $this->stringQuery( $request, 'renew_url' ) );
         }
 
         $code  = $this->stringQuery( $request, 'code' );
@@ -124,10 +125,27 @@ class MicrosoftAuthController extends Controller
         try {
             $this->oauth->handleCallback( $code, $state );
         } catch ( OAuthException $e ) {
-            return $this->redirectAfterError()->with( 'microsoft.error', $e->getMessage() );
+            return $this->redirectWithError( $e->getMessage(), (string) $e->getRenewUrl() );
         }
 
         return $this->redirectAfterConnect()->with( 'microsoft.status', 'connected' );
+    }
+
+    /**
+     * Redirect to the error target, flashing the error and — in broker mode,
+     * when it points at the broker's own host — the license `renew_url`.
+     *
+     * @since 1.1.0
+     */
+    protected function redirectWithError( string $error, string $renewUrl ): RedirectResponse
+    {
+        $redirect = $this->redirectAfterError()->with( 'microsoft.error', $error );
+
+        if ( $this->oauth->isTrustedRenewUrl( $renewUrl ) ) {
+            $redirect->with( 'microsoft.renew_url', $renewUrl );
+        }
+
+        return $redirect;
     }
 
     protected function redirectAfterConnect(): RedirectResponse

@@ -126,6 +126,7 @@ class MicrosoftOAuthServiceProvider extends ServiceProvider
             return new TokenManager(
                 $app->make( ConfigurationRepository::class ),
                 $app->make( HttpFactory::class ),
+                $app->make( 'config' ),
             );
         } );
 
@@ -181,7 +182,7 @@ class MicrosoftOAuthServiceProvider extends ServiceProvider
      * that package's own boot() method, and Laravel's provider boot order is
      * not deterministic. If MicrosoftOAuthServiceProvider happens to boot
      * first, registering directly from this class's boot() would silently
-     * skip the three keys and the CMS Settings UI would never expose them.
+     * skip the keys and the CMS Settings UI would never expose them.
      *
      * @since 1.0.0
      */
@@ -221,6 +222,7 @@ class MicrosoftOAuthServiceProvider extends ServiceProvider
             apRegisterSetting( CmsSettingsDriver::KEY_CLIENT_ID, null, $trim );
             apRegisterSetting( CmsSettingsDriver::KEY_CLIENT_SECRET, null, $encryptSecret );
             apRegisterSetting( CmsSettingsDriver::KEY_TENANT, null, $trim );
+            apRegisterSetting( CmsSettingsDriver::KEY_REDIRECT_URI, null, $trim );
         } );
     }
 }

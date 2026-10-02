@@ -13,11 +13,15 @@ declare( strict_types=1 );
 
 namespace ArtisanPackUI\MicrosoftOAuth\Tokens;
 
+use ArtisanPackUI\MicrosoftOAuth\Broker\BrokerClient;
 use ArtisanPackUI\MicrosoftOAuth\Contracts\ConfigurationRepository;
+use ArtisanPackUI\MicrosoftOAuth\Exceptions\LicenseExpiredException;
+use ArtisanPackUI\MicrosoftOAuth\Exceptions\OAuthException;
 use ArtisanPackUI\MicrosoftOAuth\Exceptions\TokenRefreshException;
 use ArtisanPackUI\MicrosoftOAuth\Models\MicrosoftConnection;
+use ArtisanPackUI\MicrosoftOAuth\OAuth\MicrosoftClient;
+use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Http\Client\Factory as HttpFactory;
-use Illuminate\Support\Carbon;
 
 /**
  * Handles token refresh and returns valid access tokens.
@@ -28,6 +32,9 @@ use Illuminate\Support\Carbon;
  * returned invalid_grant / interaction_required / consent_required,
  * or the request errored) the connection is marked disconnected so
  * downstream code can surface a "reconnect" prompt to the user.
+ *
+ * Refreshes go to Microsoft through the stateless {@see MicrosoftClient},
+ * or through the OAuth broker when `microsoft-oauth.mode` is `broker`.
  *
  * @since 1.0.0
  */
@@ -47,9 +54,17 @@ class TokenManager
         'login_required',
     ];
 
+    /**
+     * @since 1.0.0
+     *
+     * @param  ConfigurationRepository  $credentials  App credential driver.
+     * @param  HttpFactory              $http         HTTP client factory.
+     * @param  ConfigRepository|null    $config       Laravel config, for the redirect URI fallback and broker mode. Resolved from the container when omitted.
+     */
     public function __construct(
         protected ConfigurationRepository $credentials,
         protected HttpFactory $http,
+        protected ?ConfigRepository $config = null,
     ) {
     }
 
@@ -76,9 +91,13 @@ class TokenManager
     /**
      * Force a refresh regardless of expiry.
      *
+     * Goes to Microsoft directly, or through the OAuth broker when
+     * `microsoft-oauth.mode` is `broker`.
+     *
      * @since 1.0.0
      *
-     * @throws TokenRefreshException
+     * @throws LicenseExpiredException When the broker reports the site license has lapsed. The connection stays connected.
+     * @throws TokenRefreshException   For any other failure. A revoked grant also marks the connection disconnected.
      */
     public function refresh( MicrosoftConnection $connection ): string
     {
@@ -88,81 +107,45 @@ class TokenManager
             throw new TokenRefreshException( __( 'No refresh token stored for this connection.' ) );
         }
 
-        $clientId = (string) ( $this->credentials->getClientId() ?? '' );
-        $scopes   = $connection->grantedScopes();
+        $refreshToken = (string) $connection->refresh_token;
 
-        if ( '' === $clientId ) {
-            throw new TokenRefreshException(
-                __( 'Microsoft OAuth is not configured: client_id is missing.' ),
-            );
-        }
-
-        $body = [
-            'client_id'     => $clientId,
-            'refresh_token' => (string) $connection->refresh_token,
-            'grant_type'    => 'refresh_token',
-        ];
-
-        // Microsoft requires the `scope` param on refresh for v2.0; reuse
-        // the scopes the connection currently holds so we don't accidentally
-        // downgrade the grant.
-        if ( [] !== $scopes ) {
-            $body[ 'scope' ] = implode( ' ', $scopes );
-        }
-
-        $secret = (string) ( $this->credentials->getClientSecret() ?? '' );
-        if ( '' !== $secret ) {
-            $body[ 'client_secret' ] = $secret;
-        }
-
-        $response = $this->http->asForm()->post( $this->tokenEndpoint(), $body );
-
-        if ( ! $response->successful() ) {
-            $payload = $response->json();
-            $error   = 'refresh_failed';
-
-            if ( is_array( $payload ) ) {
-                $error = (string) ( $payload[ 'error' ] ?? 'refresh_failed' );
-            }
-
-            if ( in_array( $error, self::TERMINAL_REFRESH_ERRORS, true ) ) {
+        try {
+            // Microsoft requires the `scope` param on refresh for v2.0; reuse
+            // the scopes the connection currently holds so we don't
+            // accidentally downgrade the grant. The broker keeps its own.
+            $tokens = BrokerClient::isEnabled( $this->config() )
+                ? $this->brokerClient()->refresh( $refreshToken )
+                : MicrosoftClient::make( $this->credentials, $this->http, $this->config() )
+                    ->refresh( $refreshToken, $connection->grantedScopes() );
+        } catch ( TokenRefreshException $e ) {
+            // Only a revoked or expired grant disconnects. A lapsed broker
+            // license (LicenseExpiredException) or a transient failure
+            // leaves the connection intact so refreshes can resume.
+            if ( in_array( $e->getError(), self::TERMINAL_REFRESH_ERRORS, true ) ) {
                 $connection->markDisconnected(
-                    __( 'Refresh token revoked or expired (:error).', [ 'error' => $error ] ),
+                    __( 'Refresh token revoked or expired (:error).', [ 'error' => $e->getError() ] ),
                 );
             }
 
-            throw new TokenRefreshException(
-                __( 'Microsoft token refresh failed: :error', [ 'error' => $error ] ),
-            );
+            throw $e;
         }
 
-        $payload = $response->json();
+        $connection->access_token = $tokens->accessToken;
+        $connection->token_type   = $tokens->tokenType;
 
-        if ( ! is_array( $payload ) || empty( $payload[ 'access_token' ] ) ) {
-            throw new TokenRefreshException(
-                __( 'Microsoft token refresh returned an invalid payload.' ),
-            );
-        }
-
-        $connection->access_token = (string) $payload[ 'access_token' ];
-        $connection->token_type   = (string) ( $payload[ 'token_type' ] ?? 'Bearer' );
-
-        if ( isset( $payload[ 'expires_in' ] ) ) {
-            $connection->expires_at = Carbon::now()->addSeconds( (int) $payload[ 'expires_in' ] );
+        if ( null !== $tokens->expiresAt ) {
+            $connection->expires_at = $tokens->expiresAt;
         }
 
         // Microsoft rotates refresh tokens on every refresh — always overwrite
         // when one is returned so we don't keep using a stale token that will
         // eventually be revoked.
-        if ( ! empty( $payload[ 'refresh_token' ] ) ) {
-            $connection->refresh_token = (string) $payload[ 'refresh_token' ];
+        if ( null !== $tokens->refreshToken ) {
+            $connection->refresh_token = $tokens->refreshToken;
         }
 
-        if ( ! empty( $payload[ 'scope' ] ) ) {
-            $connection->scopes = array_values( array_filter(
-                explode( ' ', (string) $payload[ 'scope' ] ),
-                static fn ( string $s ): bool => '' !== $s,
-            ) );
+        if ( [] !== $tokens->scopes ) {
+            $connection->scopes = $tokens->scopes;
         }
 
         $connection->save();
@@ -170,11 +153,29 @@ class TokenManager
         return (string) $connection->access_token;
     }
 
-    protected function tokenEndpoint(): string
+    /**
+     * Broker client built from the configured broker credentials.
+     *
+     * @since 1.1.0
+     *
+     * @throws TokenRefreshException When the broker is not configured.
+     */
+    protected function brokerClient(): BrokerClient
     {
-        $tenant = (string) ( $this->credentials->getTenant() ?? 'common' );
-        $tenant = '' === $tenant ? 'common' : $tenant;
+        try {
+            return BrokerClient::fromConfig( $this->config(), $this->http );
+        } catch ( OAuthException $e ) {
+            throw new TokenRefreshException( $e->getMessage(), 'broker_not_configured', null, $e );
+        }
+    }
 
-        return "https://login.microsoftonline.com/{$tenant}/oauth2/v2.0/token";
+    /**
+     * The Laravel config repository.
+     *
+     * @since 1.1.0
+     */
+    protected function config(): ConfigRepository
+    {
+        return $this->config ??= app( 'config' );
     }
 }
