@@ -4,7 +4,9 @@ title: Credential Drivers
 
 # Credential Drivers
 
-`artisanpack-ui/microsoft-oauth` stores **OAuth tokens** (`access_token`, `refresh_token`) in the `microsoft_connections` table, always. The choice of driver only affects **app credentials** — the `client_id`, `client_secret`, and `tenant` used to build the OAuth request itself.
+`artisanpack-ui/microsoft-oauth` stores **OAuth tokens** (`access_token`, `refresh_token`) in the `microsoft_connections` table, always. The choice of driver only affects **app credentials** — the `client_id`, `client_secret`, `tenant`, and (since 1.1.0, optionally) `redirect_uri` used to build the OAuth request itself.
+
+In [broker mode](Broker) the driver isn't used for the OAuth flow at all, because the broker holds the Microsoft credentials.
 
 Three drivers ship in the box; pick the one that matches how your project stores secrets:
 
@@ -32,7 +34,7 @@ The service provider re-reads `config('microsoft-oauth.driver')` every time it r
 
 ## Why the driver classes are scoped
 
-Both `DatabaseDriver` and `CmsSettingsDriver` hold a per-request row cache so repeated `getClientId()` / `getClientSecret()` / `getTenant()` calls don't hit the database (or the CMS Settings store) three times. That cache is bound with `$this->app->scoped()` rather than `$this->app->singleton()` so:
+Both `DatabaseDriver` and `CmsSettingsDriver` hold a per-request row cache so repeated `getClientId()` / `getClientSecret()` / `getTenant()` / `getRedirectUri()` calls don't hit the database (or the CMS Settings store) on every read. That cache is bound with `$this->app->scoped()` rather than `$this->app->singleton()` so:
 
 - On stock Laravel each HTTP request gets a fresh instance and the cache is scoped to the request lifecycle.
 - On Octane / long-lived queue workers, the scoped container is flushed between requests / jobs. Without `scoped()`, a singleton driver would keep serving stale credentials for the lifetime of the worker after another lifecycle rewrote the row.
@@ -66,6 +68,23 @@ if ( $config->isConfigured() ) {
 }
 ```
 
+## The redirect URI
+
+*Added in 1.1.0.*
+
+Drivers can also supply the redirect URI by implementing the optional `ProvidesRedirectUri` contract:
+
+```php
+interface ProvidesRedirectUri
+{
+    public function getRedirectUri(): ?string;
+}
+```
+
+All three bundled drivers implement it. `config` reads `microsoft-oauth.redirect_uri`, `database` reads its `redirect_uri` column, and `cms` reads the `artisanpack_microsoft_oauth_redirect_uri` setting. When a driver returns `null`, or doesn't implement the contract, `config('microsoft-oauth.redirect_uri')` is used. So an admin-managed install can keep the redirect URI next to the other credentials, and deploy-managed installs keep using `MICROSOFT_OAUTH_REDIRECT_URI`.
+
+`ConfigurationRepository` itself is unchanged, so 1.0 custom drivers keep working.
+
 `isConfigured()` returns `true` when both `client_id` and `tenant` are non-empty. `client_secret` is intentionally not part of the check — public clients (SPA / native) authenticate with PKCE alone and legitimately have no secret.
 
 ## The `client_secret` invariant
@@ -81,7 +100,7 @@ Fix by re-saving the credentials via `ConfigurationRepository::save()` under the
 
 ## Writing your own driver
 
-Drivers are trivially replaceable — implement the five-method contract and rebind the `ConfigurationRepository`:
+Drivers are trivially replaceable — implement the five-method contract (plus `ProvidesRedirectUri` if your driver stores the redirect URI) and rebind the `ConfigurationRepository`:
 
 ```php
 // app/MicrosoftOAuth/VaultDriver.php

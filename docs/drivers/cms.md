@@ -23,17 +23,20 @@ The failure is loud on purpose — silently falling back to the `config` driver 
 
 ## Setting keys
 
-The driver reads and writes three keys via the CMS framework helpers:
+The driver reads and writes four keys via the CMS framework helpers:
 
 | Constant | Setting key |
 |---|---|
 | `CmsSettingsDriver::KEY_CLIENT_ID` | `artisanpack_microsoft_oauth_client_id` |
 | `CmsSettingsDriver::KEY_CLIENT_SECRET` | `artisanpack_microsoft_oauth_client_secret` |
 | `CmsSettingsDriver::KEY_TENANT` | `artisanpack_microsoft_oauth_tenant` |
+| `CmsSettingsDriver::KEY_REDIRECT_URI` | `artisanpack_microsoft_oauth_redirect_uri` (added in 1.1.0) |
 
-The service provider registers all three keys via `apRegisterSetting()` during the `app->booted()` phase. `client_secret` gets an encryption sanitize callback so both the driver's `save()` and any operator saving via the CMS Settings UI persist ciphertext.
+`redirect_uri` is optional. When it's empty, the driver falls back to `MICROSOFT_OAUTH_REDIRECT_URI` / `config('microsoft-oauth.redirect_uri')`.
 
-The `booted()` hook matters: `apRegisterSetting()` is declared from the CMS framework's own `boot()` method, and Laravel's provider boot order is not deterministic. Registering directly from this package's `boot()` risks the CMS framework's helpers not existing yet — the three keys silently wouldn't register and the Settings UI would never expose them. `booted()` guarantees all providers have finished booting first.
+The service provider registers all four keys via `apRegisterSetting()` during the `app->booted()` phase. `client_secret` gets an encryption sanitize callback so both the driver's `save()` and any operator saving via the CMS Settings UI persist ciphertext.
+
+The `booted()` hook matters: `apRegisterSetting()` is declared from the CMS framework's own `boot()` method, and Laravel's provider boot order is not deterministic. Registering directly from this package's `boot()` risks the CMS framework's helpers not existing yet — the keys silently wouldn't register and the Settings UI would never expose them. `booted()` guarantees all providers have finished booting first.
 
 ## Save credentials programmatically
 
@@ -43,6 +46,7 @@ Either through the framework helpers:
 apUpdateSetting( 'artisanpack_microsoft_oauth_client_id', 'aaaa1111-…' );
 apUpdateSetting( 'artisanpack_microsoft_oauth_client_secret', 'THE-VALUE-COLUMN' );
 apUpdateSetting( 'artisanpack_microsoft_oauth_tenant', 'common' );
+apUpdateSetting( 'artisanpack_microsoft_oauth_redirect_uri', 'https://your-app.test/auth/microsoft/callback' );
 ```
 
 …or through the `ConfigurationRepository` contract:
@@ -54,16 +58,19 @@ app( ConfigurationRepository::class )->save( [
     'client_id'     => 'aaaa1111-…',
     'client_secret' => 'THE-VALUE-COLUMN',
     'tenant'        => 'common',
+    'redirect_uri'  => 'https://your-app.test/auth/microsoft/callback', // optional (1.1.0)
 ] );
 ```
+
+`save()` only writes the redirect URI setting when the `redirect_uri` key is present, so 1.0-style calls keep the stored value.
 
 Both paths write ciphertext for the `client_secret` — the driver hands plaintext through `apUpdateSetting()`, and the sanitize callback registered on the setting key encrypts before persisting.
 
 ## Save credentials via the UI
 
-The CMS Settings UI picks up the three registered keys automatically. Operators can edit them there — the sanitize callback ensures the client secret is encrypted before write, regardless of who's saving.
+The CMS Settings UI picks up the registered keys automatically. Operators can edit them there — the sanitize callback ensures the client secret is encrypted before write, regardless of who's saving.
 
-Adding the three keys to a Settings page group is a project-side decision; the driver only registers them, not their UI grouping.
+Adding the keys to a Settings page group is a project-side decision; the driver only registers them, not their UI grouping.
 
 ## Encryption
 

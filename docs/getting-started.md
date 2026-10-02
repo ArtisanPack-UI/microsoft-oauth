@@ -57,6 +57,8 @@ MICROSOFT_OAUTH_TENANT=common
 
 For multi-tenant apps or credentials managed through an admin UI, switch to the `database` or `cms` driver — see [Credential Drivers](Drivers).
 
+Connecting through an OAuth broker instead of your own Entra app? Set `MICROSOFT_OAUTH_MODE=broker` plus the broker URL, site ID, and site secret, and skip steps 3–5. See [Broker Mode](Broker).
+
 ## 5. Pick the right tenant mode
 
 The `MICROSOFT_OAUTH_TENANT` value decides which Microsoft accounts your app accepts:
@@ -114,6 +116,8 @@ See [Scopes](Scopes) and [OAuth → Reauthorize](Oauth-Reauthorize).
 - [Tenants](Tenants) — the five tenant modes and `tid` enforcement rules.
 - [Scopes](Scopes) — how service packages register scopes and how incremental consent works.
 - [Tokens](Tokens) — refresh cadence, failure modes, terminal errors.
+- [Broker Mode](Broker) — run the flow through an OAuth broker so the site holds no Microsoft client secret.
+- [Stateless Client](Stateless-Client) — session-free OAuth primitives for brokers and custom flows.
 - [API Reference](API-Reference) — the full public surface: `MicrosoftOAuth` facade, `microsoft_oauth()` helper, contracts, and models.
 
 ---

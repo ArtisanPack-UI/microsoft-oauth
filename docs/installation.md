@@ -27,7 +27,9 @@ php artisan migrate
 This creates two tables:
 
 - `microsoft_connections` — the per-user connection row (encrypted access + refresh tokens, granted scopes, tenant id, expiry, status).
-- `microsoft_oauth_configurations` — used by the [database driver](Drivers-Database) to store OAuth client credentials as a single-row singleton. Unused by the `config` and `cms` drivers.
+- `microsoft_oauth_configurations` — used by the [database driver](Drivers-Database) to store OAuth client credentials (and, since 1.1.0, an optional redirect URI) as a single-row singleton. Unused by the `config` and `cms` drivers.
+
+Upgrading from 1.0? A third migration adds the `redirect_uri` column. See [Upgrading](Upgrading).
 
 See [Connection Model](Connection-Model) for a full column reference.
 
@@ -66,9 +68,22 @@ MICROSOFT_OAUTH_TENANT=common
 
 Or switch to a writable driver — see [Credential Drivers](Drivers).
 
+### Or: use an OAuth broker
+
+If your site connects through an OAuth broker instead of its own Entra app, skip the app registration and credentials above and set the broker values:
+
+```env
+MICROSOFT_OAUTH_MODE=broker
+MICROSOFT_OAUTH_BROKER_URL=https://broker.example.com
+MICROSOFT_OAUTH_BROKER_SITE_ID=your-site-id
+MICROSOFT_OAUTH_BROKER_SITE_SECRET=your-site-secret
+```
+
+See [Broker Mode](Broker).
+
 ## Session driver
 
-The OAuth flow stores three keys in the session between `/connect` and `/callback` (`microsoft_oauth.state`, `microsoft_oauth.verifier`, `microsoft_oauth.user_id`). Any session driver except `null` works — cookie, file, database, redis. If the session doesn't survive the round trip, `/callback` flashes `"OAuth state mismatch; possible CSRF attempt."` and no connection is written.
+The OAuth flow stores these keys in the session between `/connect` and `/callback`: `microsoft_oauth.state`, `microsoft_oauth.verifier` (direct mode only), and `microsoft_oauth.user_id`. Any session driver except `null` works — cookie, file, database, redis. If the session doesn't survive the round trip, `/callback` flashes `"OAuth state mismatch; possible CSRF attempt."` and no connection is written.
 
 For local HTTP dev, make sure:
 

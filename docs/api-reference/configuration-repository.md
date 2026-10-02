@@ -37,7 +37,7 @@ The Microsoft tenant identifier — one of `common`, `organizations`, `consumers
 
 ### `save( array $credentials ): void`
 
-Persist a full credential set. Keys: `client_id`, `client_secret`, `tenant`.
+Persist a full credential set. Keys: `client_id`, `client_secret`, `tenant`, plus `redirect_uri` for drivers that implement `ProvidesRedirectUri`. The bundled drivers only touch the stored redirect URI when the `redirect_uri` key is present, so 1.0-style calls leave it alone.
 
 Drivers that are read-only (like the `config` driver) may throw `RuntimeException`.
 
@@ -48,6 +48,31 @@ Whether the repository has a usable credential set.
 A `client_id` and a `tenant` are the minimum; `client_secret` is required only for confidential clients, so its presence is not part of this check.
 
 **Exception:** the `cms` driver additionally returns `false` when the stored client secret failed to decrypt (`APP_KEY` rotated) — see [CMS Driver](Drivers-CMS#app_key-rotation).
+
+## `ProvidesRedirectUri`
+
+*Added in 1.1.0.*
+
+`ArtisanPackUI\MicrosoftOAuth\Contracts\ProvidesRedirectUri` is an optional companion contract for drivers that store their own redirect URI:
+
+```php
+interface ProvidesRedirectUri
+{
+    public function getRedirectUri(): ?string;
+}
+```
+
+Return `null` to fall back to `config('microsoft-oauth.redirect_uri')`. Drivers that don't implement it always use that config value.
+
+It's kept separate from `ConfigurationRepository` so custom drivers written against 1.0 keep working unchanged.
+
+All three bundled drivers implement it:
+
+| Driver | Source |
+|---|---|
+| `ConfigDriver` | `microsoft-oauth.redirect_uri` |
+| `DatabaseDriver` | `redirect_uri` column (empty or whitespace-only values read as `null`) |
+| `CmsSettingsDriver` | `artisanpack_microsoft_oauth_redirect_uri` setting |
 
 ## Container binding
 
@@ -79,6 +104,8 @@ The concrete driver classes are `scoped()` (except `ConfigDriver`, which is a si
 - [`DatabaseDriver`](Drivers-Database) — reads and writes `microsoft_oauth_configurations` singleton row. Client secret encrypted at rest.
 - [`CmsSettingsDriver`](Drivers-CMS) — reads and writes CMS framework Settings. Client secret encrypted at rest. Requires `artisanpack-ui/cms-framework`.
 
+All three also implement `ProvidesRedirectUri`.
+
 ## Writing your own driver
 
 Implement the five-method contract and re-bind the contract:
@@ -103,6 +130,16 @@ class VaultDriver implements ConfigurationRepository
 ```php
 // AppServiceProvider::register()
 $this->app->bind( ConfigurationRepository::class, VaultDriver::class );
+```
+
+To let it supply the redirect URI too, also implement `ProvidesRedirectUri`:
+
+```php
+class VaultDriver implements ConfigurationRepository, ProvidesRedirectUri
+{
+    // …
+    public function getRedirectUri(): ?string { /* … */ }
+}
 ```
 
 If your driver holds a per-request cache, register it as `scoped()` for the same Octane / queue-worker reasons the built-in drivers do — see [Drivers → Why the driver classes are scoped](Drivers#why-the-driver-classes-are-scoped).

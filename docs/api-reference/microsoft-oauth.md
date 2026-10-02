@@ -31,7 +31,34 @@ Under the hood, `request()` resolves `MicrosoftOAuthManager` from the container 
 **Throws:**
 
 - `MissingConnectionException` — when the user has no `MicrosoftConnection` on file.
-- `TokenRefreshException` — when a connection exists but its token cannot be refreshed.
+- `TokenRefreshException` — when a connection exists but its token cannot be refreshed. In [broker mode](Broker) this can be a `LicenseExpiredException`.
+
+### `client( ?MicrosoftCredentials $credentials = null ): MicrosoftClient`
+
+*Added in 1.1.0.*
+
+Return a stateless [`MicrosoftClient`](API-Reference-Microsoft-Client). With no arguments it uses the configured credential driver. Pass explicit `MicrosoftCredentials` to talk to Microsoft as another app, the way an OAuth broker relays. The client never touches the session or the database.
+
+```php
+$client = MicrosoftOAuth::client();
+$url    = $client->authorizationUrl( $state, $scopes, [ 'prompt' => 'consent' ], $verifier );
+```
+
+See [Stateless Client](Stateless-Client).
+
+### `broker( ?BrokerCredentials $credentials = null ): BrokerClient`
+
+*Added in 1.1.0.*
+
+Return a [`BrokerClient`](API-Reference-Broker-Client) for explicit credentials, or for the configured `microsoft-oauth.broker` values.
+
+**Throws:** `OAuthException` when no credentials are passed and the configured ones are incomplete, or when the broker URL isn't HTTPS (or HTTP on a local development host).
+
+### `usesBroker(): bool`
+
+*Added in 1.1.0.*
+
+Whether `microsoft-oauth.mode` is `broker`. See [Broker Mode](Broker).
 
 ## Facade
 
@@ -62,4 +89,4 @@ $this->app->singleton( 'microsoft-oauth', function ( $app ) {
 } );
 ```
 
-The class itself takes no constructor arguments — every dependency it needs is resolved lazily from the container inside `request()`.
+The class itself takes no constructor arguments. Every dependency it needs is resolved lazily from the container inside each method.

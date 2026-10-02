@@ -47,3 +47,27 @@ function something(): void
 {
     // ..
 }
+
+/**
+ * Build an unsigned Microsoft-style id_token carrying the given claims.
+ *
+ * Shared by the stateless-client and broker test files, which run in
+ * isolation as well as together.
+ */
+function microsoftIdToken( array $claims = [] ): string
+{
+    $encode = static fn ( array $data ): string => rtrim(
+        strtr( base64_encode( json_encode( $data ) ), '+/', '-_' ),
+        '=',
+    );
+
+    $claims += [
+        'oid'                => 'oid-123',
+        'sub'                => 'sub-123',
+        'preferred_username' => 'user@contoso.com',
+        'name'               => 'Jane Doe',
+        'tid'                => 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+    ];
+
+    return $encode( [ 'alg' => 'RS256', 'typ' => 'JWT' ] ) . '.' . $encode( $claims ) . '.signature';
+}

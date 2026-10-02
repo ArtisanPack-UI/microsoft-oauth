@@ -97,8 +97,12 @@ Changing the `MICROSOFT_OAUTH_TENANT` value only affects new consent flows. Exis
 
 If the mode change tightens the authority (e.g. `common` → `organizations`), you may end up with a mix of connections that are all still "connected" but where some are for account types the new mode wouldn't accept. Two options:
 
-- **Do nothing.** The next refresh will still succeed (refresh doesn't re-validate `tid`), so existing users keep working. Only new connects go through the tightened check.
+- **Do nothing.** The next refresh will still succeed (refresh doesn't re-validate `tid`), so existing users keep working. Since 1.1.0 refresh does validate that the configured tenant is a valid authority form, so a typo in the new value fails refreshes with `invalid_tenant` instead of being sent to Microsoft. Only new connects go through the tightened check.
 - **Sweep and disconnect.** Query for connections whose `tid` fails the new authority (`MicrosoftConnection::query()->where(...)`) and call `markDisconnected()` on each.
+
+## Broker mode
+
+In [broker mode](Broker) the broker owns the tenant authority. `microsoft-oauth.tenant` isn't used, and the `tid` check described here runs on the broker, not on the site.
 
 ## Enabling multi-tenant in the Entra portal
 

@@ -62,3 +62,13 @@ it( 'throws when save is called on the read-only config driver', function (): vo
     expect( fn () => $driver->save( [ 'client_id' => 'x' ] ) )
         ->toThrow( RuntimeException::class );
 } );
+
+it( 'reads the redirect URI from config', function (): void {
+    config()->set( 'microsoft-oauth.redirect_uri', ' https://app.test/auth/microsoft/callback ' );
+
+    expect( app( ConfigDriver::class )->getRedirectUri() )->toBe( 'https://app.test/auth/microsoft/callback' );
+
+    config()->set( 'microsoft-oauth.redirect_uri', '' );
+
+    expect( app( ConfigDriver::class )->getRedirectUri() )->toBeNull();
+} );

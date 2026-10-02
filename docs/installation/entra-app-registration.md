@@ -153,7 +153,7 @@ app( ConfigurationRepository::class )->save( [
 ] );
 ```
 
-The `redirect_uri` for the `database` driver comes from `config('microsoft-oauth.redirect_uri')` / `MICROSOFT_OAUTH_REDIRECT_URI` — only the three credential columns are stored in the DB.
+The `database` driver can also store the redirect URI (since 1.1.0) by passing `'redirect_uri' => '…'` to `save()`. When the column is empty, the redirect URI comes from `config('microsoft-oauth.redirect_uri')` / `MICROSOFT_OAUTH_REDIRECT_URI`.
 
 ### `cms` driver
 
@@ -171,7 +171,7 @@ Log in as an authorized user and hit `route('microsoft.auth.connect')`. You shou
 
 ## Common gotchas
 
-- **`AADSTS50011: redirect_uri_mismatch`** — the value in `MICROSOFT_OAUTH_REDIRECT_URI` doesn't match any URI listed under **Authentication → Redirect URIs** on the app registration. Character-for-character. `http` vs. `https`, trailing slash, port — all significant.
+- **`AADSTS50011: redirect_uri_mismatch`** — the redirect URI in use (the driver's stored value, else `MICROSOFT_OAUTH_REDIRECT_URI`) doesn't match any URI listed under **Authentication → Redirect URIs** on the app registration. Character-for-character. `http` vs. `https`, trailing slash, port — all significant.
 - **`AADSTS7000215: Invalid client secret`** — either the secret expired, or you pasted the **Secret ID** column instead of the **Value** column, or the secret was rotated on the Entra side without updating your app.
 - **`AADSTS500011: The resource principal named … was not found in the tenant`** — you asked for a scope that isn't listed under **API permissions**. Add it under **Microsoft Graph** or the relevant API.
 - **`AADSTS65001: The user or administrator has not consented`** — the scope requires admin consent that hasn't been granted, or the user declined. Have an admin click **Grant admin consent for {tenant}** on the API permissions page.

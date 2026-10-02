@@ -58,7 +58,7 @@ interface ConfigurationRepository
      *
      * @since 1.0.0
      *
-     * @param  array<string, string|null>  $credentials  Keys: client_id, client_secret, tenant.
+     * @param  array<string, string|null>  $credentials  Keys: client_id, client_secret, tenant (and redirect_uri for drivers implementing ProvidesRedirectUri).
      */
     public function save( array $credentials ): void;
 

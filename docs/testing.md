@@ -133,7 +133,8 @@ Http::fake( [
     ] ),
 ] );
 
-$connection = MicrosoftConnection::factory()->create( [
+$connection = MicrosoftConnection::create( [
+    'user_id'       => 1,
     'access_token'  => 'expired-token',
     'refresh_token' => 'old-refresh-token',
     'expires_at'    => now()->subMinute(),
@@ -264,6 +265,96 @@ $this->actingAs( $user )
     ->get( route( 'microsoft.auth.callback' ) . '?code=test-code&state=WRONG-STATE' )
     ->assertRedirect( '/' )
     ->assertSessionHas( 'microsoft.error' );
+```
+
+## Testing broker mode
+
+Switch the mode in config and fake the broker's endpoints:
+
+```php
+use ArtisanPackUI\MicrosoftOAuth\Exceptions\LicenseExpiredException;
+use ArtisanPackUI\MicrosoftOAuth\Tokens\TokenManager;
+use Illuminate\Support\Facades\Http;
+
+use ArtisanPackUI\MicrosoftOAuth\Models\MicrosoftConnection;
+
+beforeEach( function (): void {
+    $this->connection = MicrosoftConnection::create( [
+        'user_id'       => 1,
+        'access_token'  => 'expired',
+        'refresh_token' => 'old-refresh-token',
+        'expires_at'    => now()->subMinute(),
+        'status'        => MicrosoftConnection::STATUS_CONNECTED,
+    ] );
+
+    config( [
+        'microsoft-oauth.mode'               => 'broker',
+        'microsoft-oauth.broker.url'         => 'https://broker.test',
+        'microsoft-oauth.broker.site_id'     => 'site-1',
+        'microsoft-oauth.broker.site_secret' => '1|plain-secret',
+    ] );
+} );
+
+it( 'refreshes through the broker', function (): void {
+    Http::fake( [
+        'https://broker.test/api/v1/oauth/refresh' => Http::response( [
+            'token_type'    => 'Bearer',
+            'access_token'  => 'brokered-access',
+            'refresh_token' => 'brokered-refresh',
+            'expires_in'    => 3600,
+            'scopes'        => [ 'openid', 'offline_access' ],
+        ] ),
+    ] );
+
+    expect( app( TokenManager::class )->refresh( $this->connection ) )->toBe( 'brokered-access' );
+
+    Http::assertSent( fn ( $request ) => $request->hasHeader( 'Authorization', 'Bearer 1|plain-secret' ) );
+} );
+
+it( 'keeps the connection on a lapsed license', function (): void {
+    Http::fake( [
+        'https://broker.test/api/v1/oauth/refresh' => Http::response( [ 'error' => 'license_expired' ], 402 ),
+    ] );
+
+    expect( fn () => app( TokenManager::class )->refresh( $this->connection ) )
+        ->toThrow( LicenseExpiredException::class );
+
+    expect( $this->connection->fresh()->isConnected() )->toBeTrue();
+} );
+```
+
+The connect URL in broker mode is the signed broker link. Assert on its host and parameters rather than on Microsoft's endpoint:
+
+```php
+$this->actingAs( $user )
+    ->get( route( 'microsoft.auth.connect' ) )
+    ->assertRedirectContains( 'https://broker.test/api/v1/oauth/microsoft/authorize' );
+```
+
+## Testing the stateless client
+
+`MicrosoftClient` has no session or database dependency, so tests only need `Http::fake()`:
+
+```php
+use ArtisanPackUI\MicrosoftOAuth\Facades\MicrosoftOAuth;
+use ArtisanPackUI\MicrosoftOAuth\OAuth\MicrosoftCredentials;
+use Illuminate\Support\Facades\Http;
+
+Http::fake( [
+    'https://login.microsoftonline.com/*' => Http::response( [
+        'access_token'  => 'new-access',
+        'refresh_token' => 'rotated',
+        'expires_in'    => 3600,
+        'scope'         => 'openid offline_access',
+    ] ),
+] );
+
+$tokens = MicrosoftOAuth::client( new MicrosoftCredentials( 'client-id', 'secret', 'common' ) )
+    ->refresh( 'old-refresh', [ 'openid', 'offline_access' ] );
+
+expect( $tokens->accessToken )->toBe( 'new-access' )
+    ->and( $tokens->refreshToken )->toBe( 'rotated' )
+    ->and( $tokens->scopes )->toBe( [ 'openid', 'offline_access' ] );
 ```
 
 ## Stubbing the `TokenProvider` contract

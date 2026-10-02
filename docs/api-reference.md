@@ -10,11 +10,14 @@ Sub-pages by class:
 
 - [`MicrosoftOAuth` — the facade / helper root](API-Reference-Microsoft-Oauth)
 - [`OAuthManager` — the authorization-code flow](API-Reference-Oauth-Manager)
+- [`MicrosoftClient` + `MicrosoftCredentials` — stateless OAuth primitives](API-Reference-Microsoft-Client)
+- [`BrokerClient` + `BrokerCredentials` — the OAuth broker client](API-Reference-Broker-Client)
+- [`TokenResponse` — exchange / refresh result](API-Reference-Token-Response)
 - [`MicrosoftOAuthManager` — the bearer-ready HTTP client wrapper](API-Reference-Microsoft-Oauth-Manager)
 - [`TokenManager`](API-Reference-Token-Manager)
 - [`TokenProvider` (contract) + `DefaultTokenProvider`](API-Reference-Token-Provider)
 - [`ScopeRegistry`](API-Reference-Scope-Registry)
-- [`ConfigurationRepository` (contract + three drivers)](API-Reference-Configuration-Repository)
+- [`ConfigurationRepository` (contract + three drivers) and `ProvidesRedirectUri`](API-Reference-Configuration-Repository)
 - [`MicrosoftConnection`](API-Reference-Connection-Model)
 - [`TenantAuthority` + `TenantMode`](API-Reference-Tenant-Authority)
 - [Exceptions](API-Reference-Exceptions)
@@ -25,6 +28,9 @@ Sub-pages by class:
 use ArtisanPackUI\MicrosoftOAuth\Facades\MicrosoftOAuth;
 
 MicrosoftOAuth::request( $userId ); // PendingRequest with bearer token
+MicrosoftOAuth::client();           // stateless MicrosoftClient (1.1.0)
+MicrosoftOAuth::broker();           // BrokerClient (1.1.0)
+MicrosoftOAuth::usesBroker();       // bool (1.1.0)
 ```
 
 The facade wraps the `MicrosoftOAuth` class, which itself is a thin aggregator over `MicrosoftOAuthManager`. Prefer injecting the `TokenProvider` contract or the `MicrosoftOAuthManager` in downstream packages; the facade exists for call sites where DI is more ceremony than the call warrants.
@@ -65,6 +71,9 @@ ArtisanPackUI\MicrosoftOAuth\
 ├── MicrosoftOAuth.php                                — the aggregator
 ├── MicrosoftOAuthServiceProvider.php
 ├── helpers.php                                       — microsoft_oauth() function
+├── Broker\
+│   ├── BrokerClient.php                              — OAuth broker client
+│   └── BrokerCredentials.php
 ├── Facades\
 │   └── MicrosoftOAuth.php                            — facade
 ├── Configuration\
@@ -73,10 +82,14 @@ ArtisanPackUI\MicrosoftOAuth\
 │   └── CmsSettingsDriver.php
 ├── Contracts\
 │   ├── ConfigurationRepository.php
+│   ├── ProvidesRedirectUri.php                       — optional driver contract
 │   └── TokenProvider.php
 ├── OAuth\
 │   ├── OAuthManager.php                              — authorization-code flow
 │   ├── MicrosoftOAuthManager.php                     — bearer-ready HTTP client
+│   ├── MicrosoftClient.php                           — stateless OAuth primitives
+│   ├── MicrosoftCredentials.php
+│   ├── TokenResponse.php
 │   ├── TenantAuthority.php
 │   ├── TenantMode.php                                — enum
 │   └── IncrementalConsentResult.php                  — enum
@@ -91,8 +104,11 @@ ArtisanPackUI\MicrosoftOAuth\
 │   └── Controllers\
 │       └── MicrosoftAuthController.php               — the three routes
 └── Exceptions\
+    ├── Concerns\
+    │   └── CarriesOAuthError.php                     — getError() / getRenewUrl()
     ├── OAuthException.php
     ├── TokenRefreshException.php
+    ├── LicenseExpiredException.php                   — extends TokenRefreshException
     └── MissingConnectionException.php                — extends OAuthException
 ```
 
@@ -105,13 +121,14 @@ Reference: [OAuth Flow → Routes](Oauth#routes)
 | Tag | What it publishes |
 |---|---|
 | `microsoft-oauth-config` | `config/microsoft-oauth.php` |
-| `microsoft-oauth-migrations` | Both migrations to `database/migrations/`. |
+| `microsoft-oauth-migrations` | All three migrations to `database/migrations/`. |
 
 ## Filter hooks
 
 | Hook | Contract | Purpose |
 |---|---|---|
 | `ap.microsoft.oauth.scopes` | Filter — receives and returns `array<int, string>` | Contribute scopes to the [registry](Scopes). Fires inside `ScopeRegistry::all()`. |
+| `ap.microsoft.oauth.broker.credentials` | Filter — receives and returns `array{url: ?string, site_id: ?string, site_secret: ?string}` | Supply [broker](Broker) credentials at runtime. Fires inside `BrokerCredentials::fromConfig()`. Added in 1.1.0. |
 
 ## Enum types
 
