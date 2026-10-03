@@ -255,6 +255,57 @@ it( 'keeps the connection on a transient broker failure', function ( int $status
     'provider unavailable' => [ 502, 'provider_unavailable' ],
 ] );
 
+it( 'uses the tokens another refresh stored instead of refreshing again', function (): void {
+    Http::fake();
+
+    $connection = expiredMicrosoftConnection();
+
+    // Another request rotated the token while this one waited on the lock.
+    MicrosoftConnection::findOrFail( $connection->getKey() )->update( [
+        'access_token'  => 'fresh',
+        'refresh_token' => 'rotated',
+        'expires_at'    => Carbon::now()->addHour(),
+    ] );
+
+    expect( app( TokenManager::class )->refresh( $connection ) )->toBe( 'fresh' );
+
+    Http::assertNothingSent();
+} );
+
+it( 'uses the tokens a concurrent refresh stored when the broker says the token was superseded', function (): void {
+    $connection = expiredMicrosoftConnection();
+
+    Http::fake( function () use ( $connection ) {
+        // The winning request lands its rotated tokens before the broker
+        // answers this one.
+        MicrosoftConnection::findOrFail( $connection->getKey() )->update( [
+            'access_token'  => 'fresh',
+            'refresh_token' => 'rotated',
+            'expires_at'    => Carbon::now()->addHour(),
+        ] );
+
+        return Http::response( [ 'error' => 'refresh_superseded' ], 409 );
+    } );
+
+    expect( app( TokenManager::class )->refresh( $connection ) )->toBe( 'fresh' );
+    expect( $connection->fresh()->isConnected() )->toBeTrue();
+} );
+
+it( 'keeps the connection when the broker says the token was superseded and nothing landed yet', function (): void {
+    Http::fake( [ 'workshop.test/*' => Http::response( [ 'error' => 'refresh_superseded' ], 409 ) ] );
+
+    $connection = expiredMicrosoftConnection();
+
+    try {
+        app( TokenManager::class )->refresh( $connection );
+        $this->fail( 'Expected a TokenRefreshException.' );
+    } catch ( TokenRefreshException $e ) {
+        expect( $e->getError() )->toBe( 'refresh_superseded' );
+    }
+
+    expect( $connection->fresh()->isConnected() )->toBeTrue();
+} );
+
 it( 'raises a refresh exception when the broker is not configured', function (): void {
     config()->set( 'microsoft-oauth.broker.url', null );
 

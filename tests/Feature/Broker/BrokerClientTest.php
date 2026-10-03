@@ -44,7 +44,7 @@ it( 'builds a signed authorize link that matches the broker contract', function 
     $expected = hash_hmac(
         'sha256',
         "microsoft\n" . http_build_query( $unsigned, '', '&', PHP_QUERY_RFC3986 ),
-        hash( 'sha256', 'plain-site-secret' ),
+        hash_hmac( 'sha256', 'jmwd-workshop:oauth-authorize', 'plain-site-secret' ),
     );
 
     expect( $params['signature'] )->toBe( $expected );
@@ -56,10 +56,16 @@ it( 'omits scopes so the broker grants every allowed scope', function (): void {
     expect( $params )->not->toHaveKey( 'scopes' );
 } );
 
-it( 'keys signatures with the whole secret when it has no id prefix', function (): void {
-    $credentials = new BrokerCredentials( 'https://workshop.test', 'site-123', 'no-pipe-secret' );
+it( 'derives the signing key from the plain part of the secret with the broker\'s label', function (): void {
+    $credentials = new BrokerCredentials( 'https://workshop.test', 'site-123', '42|keystone-test-secret' );
 
-    expect( $credentials->signingKey() )->toBe( hash( 'sha256', 'no-pipe-secret' ) );
+    expect( $credentials->signingKey() )->toBe( 'f8bcb6d68bd8744f4aeaf3346e8a27dc81152888e8d592a1c662e2fbf330ce68' );
+} );
+
+it( 'keys signatures with the whole secret when it has no id prefix', function (): void {
+    $credentials = new BrokerCredentials( 'https://workshop.test', 'site-123', 'keystone-test-secret' );
+
+    expect( $credentials->signingKey() )->toBe( 'f8bcb6d68bd8744f4aeaf3346e8a27dc81152888e8d592a1c662e2fbf330ce68' );
 } );
 
 it( 'exchanges the one-time code at the broker with the site secret as bearer', function (): void {
@@ -215,6 +221,16 @@ it( 'rejects an HTTP renew URL for an HTTPS broker but allows it for a local HTT
     $local = MicrosoftOAuth::broker( new BrokerCredentials( 'http://workshop.test', 'site-123', '7|secret' ) );
 
     expect( $local->isTrustedRenewUrl( 'http://workshop.test/renew' ) )->toBeTrue();
+} );
+
+it( 'only trusts renew URLs on the broker port', function (): void {
+    expect( $this->broker->isTrustedRenewUrl( 'https://workshop.test:443/renew' ) )->toBeTrue();
+    expect( $this->broker->isTrustedRenewUrl( 'https://workshop.test:8443/renew' ) )->toBeFalse();
+
+    $onPort = MicrosoftOAuth::broker( new BrokerCredentials( 'https://workshop.test:8443', 'site-123', '7|secret' ) );
+
+    expect( $onPort->isTrustedRenewUrl( 'https://workshop.test:8443/renew' ) )->toBeTrue();
+    expect( $onPort->isTrustedRenewUrl( 'https://workshop.test/renew' ) )->toBeFalse();
 } );
 
 it( 'treats a non-string access token as a failed exchange', function (): void {

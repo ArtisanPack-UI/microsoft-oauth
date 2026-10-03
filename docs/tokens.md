@@ -72,8 +72,9 @@ This bypasses the expiry check and always hits the refresh endpoint. Useful in t
 `TokenManager::refresh()`:
 
 1. If no refresh token is on file, calls `$connection->markDisconnected('Missing refresh token.')` and throws `TokenRefreshException("No refresh token stored for this connection.")`.
-2. If `client_id` is missing or the configured tenant isn't a valid authority (misconfiguration), throws `TokenRefreshException` (`getError()` = `invalid_client` / `invalid_tenant`) without marking the connection disconnected — the fix is in configuration, not the connection. In broker mode, incomplete broker credentials do the same with `broker_not_configured`.
-3. POSTs to `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token` (broker mode: the broker's `/api/v1/oauth/refresh` with `refresh_token` and `provider=microsoft`):
+2. Takes a per-connection cache lock (`microsoft-oauth:refresh:{id}`, waiting up to 10 seconds), so refreshes for one connection run one at a time. Once it has the lock it re-reads the connection: if another refresh replaced the refresh token in the meantime and stored a valid access token, that token is returned without refreshing again. If the lock can't be had in time, throws `TokenRefreshException` (`getError()` = `refresh_locked`) and leaves the connection connected. The lock needs a cache store that supports locks (the default `database`, `file`, `redis` and `array` stores all do), shared by every server the app runs on.
+3. If `client_id` is missing or the configured tenant isn't a valid authority (misconfiguration), throws `TokenRefreshException` (`getError()` = `invalid_client` / `invalid_tenant`) without marking the connection disconnected — the fix is in configuration, not the connection. In broker mode, incomplete broker credentials do the same with `broker_not_configured`.
+4. POSTs to `https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token` (broker mode: the broker's `/api/v1/oauth/refresh` with `refresh_token` and `provider=microsoft`):
    ```
    client_id      = <from config driver>
    refresh_token  = <from connection>
@@ -82,8 +83,8 @@ This bypasses the expiry check and always hits the refresh endpoint. Useful in t
    client_secret  = <from config driver, if present>
    ```
    The `scope` parameter is required on Microsoft's v2.0 refresh — sending the connection's current scope set keeps the grant intact rather than accidentally downgrading.
-4. On non-success, extracts `error` from the response body. If it's one of the **terminal errors** (see below), marks the connection disconnected. Either way, throws `TokenRefreshException("Microsoft token refresh failed: {error}")`, with the code available from `getError()`.
-5. On success, updates the connection:
+5. On non-success, extracts `error` from the response body. If it's one of the **terminal errors** (see below), marks the connection disconnected. Either way, throws `TokenRefreshException("Microsoft token refresh failed: {error}")`, with the code available from `getError()`.
+6. On success, updates the connection:
     - `access_token`, `token_type` — always.
     - `expires_at` — computed from `expires_in`, when the response includes it.
     - `refresh_token` — only if the response included one. **Microsoft rotates refresh tokens on every refresh**, so this path is usually taken; the guard prevents wiping the existing one if a response is malformed.
@@ -100,7 +101,7 @@ Four Microsoft error codes are treated as **terminal** — the refresh token is 
 - `consent_required` — a scope requires consent that hasn't been granted.
 - `login_required` — the user's Microsoft session expired or was invalidated.
 
-On any of these, the connection is marked disconnected with reason `"Refresh token revoked or expired (:error)."`. All other errors (`invalid_client`, `invalid_tenant`, `unauthorized_client`, `license_expired`, network failures) throw `TokenRefreshException` but leave the connection connected — the caller can retry after fixing the underlying issue.
+On any of these, the connection is marked disconnected with reason `"Refresh token revoked or expired (:error)."`. All other errors (`invalid_client`, `invalid_tenant`, `unauthorized_client`, `license_expired`, `refresh_superseded`, `refresh_locked`, network failures) throw `TokenRefreshException` but leave the connection connected — the caller can retry after fixing the underlying issue.
 
 ## Failure modes
 

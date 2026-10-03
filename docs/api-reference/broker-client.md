@@ -122,4 +122,4 @@ Read `microsoft-oauth.broker.url`, `site_id`, and `site_secret`, pass them throu
 
 ### `signingKey(): string`
 
-`sha256()` of the plain part of the site secret, meaning everything after the first `|`, or the whole secret when there is no `|`. Used to sign `/authorize` links.
+`hash_hmac( 'sha256', BrokerCredentials::SIGNING_KEY_LABEL, $plain )`, where `SIGNING_KEY_LABEL` is `jmwd-workshop:oauth-authorize` and `$plain` is the plain part of the site secret: everything after the first `|`, or the whole secret when there is no `|`. Used to sign `/authorize` links. (Before 1.2.0 the key was `sha256( $plain )`, which the broker no longer accepts.)
