@@ -132,7 +132,7 @@ class TokenManager
      * @since 1.2.0 Refreshes run behind a lock, and the broker's `refresh_superseded` never disconnects.
      *
      * @throws LicenseExpiredException When the broker reports the site license has lapsed. The connection stays connected.
-     * @throws TokenRefreshException   For any other failure. A revoked grant also marks the connection disconnected; `refresh_superseded` and `refresh_locked` never do.
+     * @throws TokenRefreshException   For any other failure. A revoked grant also marks the connection disconnected; `refresh_superseded` and `refresh_in_progress` never do.
      */
     public function refresh( MicrosoftConnection $connection ): string
     {
@@ -148,7 +148,7 @@ class TokenManager
         try {
             $lock->block( self::REFRESH_LOCK_WAIT_SECONDS );
         } catch ( LockTimeoutException $e ) {
-            throw new TokenRefreshException( __( 'Another refresh of this Microsoft connection is still running.' ), 'refresh_locked', null, $e );
+            throw new TokenRefreshException( __( 'Another refresh of this Microsoft connection is still running.' ), 'refresh_in_progress', null, $e );
         }
 
         try {

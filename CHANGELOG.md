@@ -5,7 +5,7 @@
 ### Fixed
 
 - **Broker signing key.** `/authorize` links are now signed with `hash_hmac( 'sha256', 'jmwd-workshop:oauth-authorize', <plain part of the site secret> )` (`BrokerCredentials::SIGNING_KEY_LABEL`) instead of `sha256( <plain part> )`, which the broker no longer accepts. Sites registered with the broker before this change need a new site secret from the broker admin (or need to register again) before connecting an account.
-- **Concurrent refreshes no longer disconnect a working connection.** `TokenManager::refresh()` runs behind a per-connection cache lock and reuses the tokens another refresh stored while it waited. The broker's `409 refresh_superseded` error is non-terminal: the manager returns the winning refresh's token when it has landed, and otherwise throws `TokenRefreshException` without disconnecting. A refresh that can't get the lock within 10 seconds throws `TokenRefreshException` (`getError()` = `refresh_locked`).
+- **Concurrent refreshes no longer disconnect a working connection.** `TokenManager::refresh()` runs behind a per-connection cache lock and reuses the tokens another refresh stored while it waited. The broker's `409 refresh_superseded` error is non-terminal: the manager returns the winning refresh's token when it has landed, and otherwise throws `TokenRefreshException` without disconnecting. A refresh that can't get the lock within 10 seconds throws `TokenRefreshException` (`getError()` = `refresh_in_progress`).
 - `BrokerClient::isTrustedRenewUrl()` now also requires the `renew_url`'s port (or its scheme's default) to match the broker URL's.
 
 ## [1.1.0] - 2026-10-02
