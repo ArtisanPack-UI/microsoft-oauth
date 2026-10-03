@@ -20,8 +20,10 @@ use ArtisanPackUI\MicrosoftOAuth\Exceptions\OAuthException;
 use ArtisanPackUI\MicrosoftOAuth\Exceptions\TokenRefreshException;
 use ArtisanPackUI\MicrosoftOAuth\Models\MicrosoftConnection;
 use ArtisanPackUI\MicrosoftOAuth\OAuth\MicrosoftClient;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Contracts\Config\Repository as ConfigRepository;
 use Illuminate\Http\Client\Factory as HttpFactory;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * Handles token refresh and returns valid access tokens.
@@ -35,6 +37,11 @@ use Illuminate\Http\Client\Factory as HttpFactory;
  *
  * Refreshes go to Microsoft through the stateless {@see MicrosoftClient},
  * or through the OAuth broker when `microsoft-oauth.mode` is `broker`.
+ *
+ * Microsoft rotates the refresh token on every refresh, so two refreshes
+ * racing with the same token can't both win. Refreshes for a connection
+ * run one at a time behind a cache lock, and one that waited on another
+ * uses the tokens the other stored instead of refreshing again.
  *
  * @since 1.0.0
  */
@@ -53,6 +60,29 @@ class TokenManager
         'consent_required',
         'login_required',
     ];
+
+    /**
+     * The broker's error for a refresh token another request rotated a
+     * moment ago. The grant is still good, so it never disconnects.
+     *
+     * @since 1.2.0
+     */
+    protected const SUPERSEDED_REFRESH_ERROR = 'refresh_superseded';
+
+    /**
+     * How long a refresh lock is held at most, in seconds.
+     *
+     * @since 1.2.0
+     */
+    protected const REFRESH_LOCK_SECONDS = 30;
+
+    /**
+     * How long a refresh waits for another one on the same connection to
+     * finish, in seconds.
+     *
+     * @since 1.2.0
+     */
+    protected const REFRESH_LOCK_WAIT_SECONDS = 10;
 
     /**
      * @since 1.0.0
@@ -96,8 +126,13 @@ class TokenManager
      *
      * @since 1.0.0
      *
+     * Runs behind a per-connection cache lock. When another refresh replaced
+     * the token while this one waited, its stored access token is returned
+     * without refreshing again.
+     * @since 1.2.0 Refreshes run behind a lock, and the broker's `refresh_superseded` never disconnects.
+     *
      * @throws LicenseExpiredException When the broker reports the site license has lapsed. The connection stays connected.
-     * @throws TokenRefreshException   For any other failure. A revoked grant also marks the connection disconnected.
+     * @throws TokenRefreshException   For any other failure. A revoked grant also marks the connection disconnected; `refresh_superseded` and `refresh_in_progress` never do.
      */
     public function refresh( MicrosoftConnection $connection ): string
     {
@@ -107,8 +142,46 @@ class TokenManager
             throw new TokenRefreshException( __( 'No refresh token stored for this connection.' ) );
         }
 
-        $refreshToken = (string) $connection->refresh_token;
+        $sentToken = (string) $connection->refresh_token;
+        $lock      = Cache::lock( 'microsoft-oauth:refresh:' . $connection->getKey(), self::REFRESH_LOCK_SECONDS );
 
+        try {
+            $lock->block( self::REFRESH_LOCK_WAIT_SECONDS );
+        } catch ( LockTimeoutException $e ) {
+            throw new TokenRefreshException( __( 'Another refresh of this Microsoft connection is still running.' ), 'refresh_in_progress', null, $e );
+        }
+
+        try {
+            if ( $connection->exists ) {
+                $connection->refresh();
+            }
+
+            $refreshed = $this->tokenRefreshedElsewhere( $connection, $sentToken );
+
+            if ( null !== $refreshed ) {
+                return $refreshed;
+            }
+
+            if ( empty( $connection->refresh_token ) ) {
+                throw new TokenRefreshException( __( 'No refresh token stored for this connection.' ) );
+            }
+
+            return $this->refreshWith( $connection, (string) $connection->refresh_token );
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Refresh the connection with its refresh token and store the result.
+     *
+     * @since 1.2.0
+     *
+     * @throws LicenseExpiredException When the broker reports the site license has lapsed.
+     * @throws TokenRefreshException   For any other failure.
+     */
+    protected function refreshWith( MicrosoftConnection $connection, string $refreshToken ): string
+    {
         try {
             // Microsoft requires the `scope` param on refresh for v2.0; reuse
             // the scopes the connection currently holds so we don't
@@ -118,6 +191,16 @@ class TokenManager
                 : MicrosoftClient::make( $this->credentials, $this->http, $this->config() )
                     ->refresh( $refreshToken, $connection->grantedScopes() );
         } catch ( TokenRefreshException $e ) {
+            // Another request (on a server this lock doesn't reach) rotated
+            // the token first; use what it stored if it has landed.
+            if ( self::SUPERSEDED_REFRESH_ERROR === $e->getError() ) {
+                if ( $connection->exists ) {
+                    $connection->refresh();
+                }
+
+                return $this->tokenRefreshedElsewhere( $connection, $refreshToken ) ?? throw $e;
+            }
+
             // Only a revoked or expired grant disconnects. A lapsed broker
             // license (LicenseExpiredException) or a transient failure
             // leaves the connection intact so refreshes can resume.
@@ -151,6 +234,22 @@ class TokenManager
         $connection->save();
 
         return (string) $connection->access_token;
+    }
+
+    /**
+     * The connection's current access token when another refresh replaced
+     * the refresh token that was sent and stored a token that is still
+     * valid, or null.
+     *
+     * @since 1.2.0
+     */
+    protected function tokenRefreshedElsewhere( MicrosoftConnection $connection, string $sentToken ): ?string
+    {
+        $replaced = ! empty( $connection->refresh_token ) && (string) $connection->refresh_token !== $sentToken;
+
+        return $replaced && $connection->isConnected() && ! $connection->isExpired() && ! empty( $connection->access_token )
+            ? (string) $connection->access_token
+            : null;
     }
 
     /**

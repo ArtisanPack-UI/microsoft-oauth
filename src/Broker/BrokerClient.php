@@ -173,7 +173,7 @@ class BrokerClient
      * @param  string  $refreshToken  The stored refresh token. Microsoft rotates it; the response carries the new one, or this one when the broker returns none.
      *
      * @throws LicenseExpiredException When the site's license has lapsed (HTTP 402).
-     * @throws TokenRefreshException   For any other failure. `getError()` is `invalid_grant` for a revoked grant.
+     * @throws TokenRefreshException   For any other failure. `getError()` is `invalid_grant` for a revoked grant, or `refresh_superseded` (HTTP 409) when a concurrent request already rotated the token.
      */
     public function refresh( string $refreshToken ): TokenResponse
     {
@@ -207,7 +207,7 @@ class BrokerClient
      *
      * A `renew_url` arriving on the callback query string is attacker
      * controllable, so it is only surfaced when it is on the configured
-     * broker host and uses HTTPS (or the broker's own scheme, for a local
+     * broker host and port and uses HTTPS (or the broker's own scheme, for a local
      * HTTP broker) — never a downgrade from an HTTPS broker.
      *
      * URLs that PHP and browsers could parse differently are rejected
@@ -216,6 +216,7 @@ class BrokerClient
      * broker host in PHP but to `evil` in a browser).
      *
      * @since 1.1.0
+     * @since 1.2.0 The port must match the broker's too.
      */
     public function isTrustedRenewUrl( ?string $url ): bool
     {
@@ -229,13 +230,28 @@ class BrokerClient
             return false;
         }
 
+        $broker        = parse_url( $this->credentials->url );
+        $broker        = is_array( $broker ) ? $broker : [];
         $scheme        = strtolower( (string) ( $parts['scheme'] ?? '' ) );
         $host          = strtolower( (string) ( $parts['host'] ?? '' ) );
-        $brokerScheme  = strtolower( (string) parse_url( $this->credentials->url, PHP_URL_SCHEME ) );
-        $brokerHost    = strtolower( (string) parse_url( $this->credentials->url, PHP_URL_HOST ) );
+        $brokerScheme  = strtolower( (string) ( $broker['scheme'] ?? '' ) );
+        $brokerHost    = strtolower( (string) ( $broker['host'] ?? '' ) );
         $allowedScheme = 'https' === $scheme || ( 'http' === $scheme && 'http' === $brokerScheme );
 
-        return $allowedScheme && '' !== $host && $host === $brokerHost;
+        return $allowedScheme
+            && '' !== $host
+            && $host === $brokerHost
+            && self::effectivePort( $scheme, $parts['port'] ?? null ) === self::effectivePort( $brokerScheme, $broker['port'] ?? null );
+    }
+
+    /**
+     * A URL's port, or its scheme's default when it names none.
+     *
+     * @since 1.2.0
+     */
+    protected static function effectivePort( string $scheme, ?int $port ): int
+    {
+        return $port ?? ( 'http' === $scheme ? 80 : 443 );
     }
 
     /**

@@ -123,13 +123,19 @@ The response is a [`TokenResponse`](API-Reference-Token-Response) that gets pers
 
 The same [terminal errors](Tokens#terminal-refresh-errors) (`invalid_grant`, `interaction_required`, `consent_required`, `login_required`) mark the connection disconnected. If the broker is not configured, the refresh throws `TokenRefreshException` with `getError()` = `broker_not_configured` and leaves the connection connected.
 
+Because Microsoft rotates refresh tokens, a broker only lets one refresh with a given token win. When a second refresh arrives with a token another request rotated a moment earlier, the broker answers `409` with `error=refresh_superseded`. That is never terminal: the token manager re-reads the connection and returns the access token the winning refresh stored, or throws `TokenRefreshException` (`getError()` = `refresh_superseded`) with the connection left connected if it hasn't landed yet. Refreshes on one site already run one at a time behind a cache lock (see [Tokens](Tokens#what-happens-during-refresh)), so this only comes up when servers don't share a cache.
+
 ## Signing
 
 `/authorize` links are signed with HMAC-SHA256:
 
 1. Take every query parameter except `signature`, sort by key, and encode as an RFC 3986 query string.
 2. Prefix it with `microsoft\n`.
-3. HMAC that payload with a key equal to `sha256( <plain part of the site secret> )`. The plain part is everything after the `|` in a `{id}|{plain}` secret, or the whole secret when there's no `|`.
+3. HMAC that payload with the signing key, `hash_hmac( 'sha256', 'jmwd-workshop:oauth-authorize', <plain part of the site secret> )`. The plain part is everything after the `|` in a `{id}|{plain}` secret, or the whole secret when there's no `|`.
+
+The label keeps the signing key distinct from the hash of the secret the broker stores, so a leaked broker database can't be used to forge links.
+
+> **Upgrading from 1.1:** 1.1 keyed signatures with `sha256( <plain part> )`, which the broker no longer accepts. Sites registered with the broker before this change need a new site secret from the broker admin (or need to register again) before they can connect an account.
 
 `BrokerClient::signature( array $params )` computes it if you need to build or verify a link yourself.
 
